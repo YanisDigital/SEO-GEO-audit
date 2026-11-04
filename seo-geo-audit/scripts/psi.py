@@ -6,8 +6,9 @@ Usage:
 
 API key (optional): set the environment variable PSI_API_KEY. Without a key the
 public quota is small and requests may fail with HTTP 429.
-The key is read only from the environment, is sent only to googleapis.com over
-HTTPS, and is never printed, logged or written to the output file.
+The key is read only from the environment, is sent only to www.googleapis.com
+over HTTPS in the X-goog-api-key header (never in the URL), redirects are not
+followed, and it is never printed, logged or written to the output file.
 """
 
 from __future__ import annotations
@@ -33,14 +34,29 @@ def redact(text: str, secret: str | None) -> str:
     return text.replace(secret, "[REDACTED]") if secret else text
 
 
-def run(url: str, strategy: str, key: str | None) -> dict:
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Never follow redirects: urllib would forward the API key header to the new host."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_OPENER = urllib.request.build_opener(_NoRedirect)
+
+
+def build_request(url: str, strategy: str, key: str | None) -> urllib.request.Request:
+    """The key goes in a header, not the query string, so it never appears in URLs or logs."""
     params = [("url", url), ("strategy", strategy)] + [("category", c) for c in CATEGORIES]
+    headers = {"User-Agent": "seo-geo-audit/1.0"}
     if key:
-        params.append(("key", key))
-    req = urllib.request.Request(ENDPOINT + "?" + urlencode(params),
-                                 headers={"User-Agent": "seo-geo-audit/1.0"})
+        headers["X-goog-api-key"] = key
+    return urllib.request.Request(ENDPOINT + "?" + urlencode(params), headers=headers)
+
+
+def run(url: str, strategy: str, key: str | None) -> dict:
+    req = build_request(url, strategy, key)
     try:
-        with urllib.request.urlopen(req, timeout=120) as resp:  # fixed https host
+        with _OPENER.open(req, timeout=120) as resp:  # fixed https host
             data = json.loads(resp.read(30 * 1024 * 1024).decode("utf-8"))
     except urllib.error.HTTPError as exc:
         msg = ""

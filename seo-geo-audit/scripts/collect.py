@@ -9,7 +9,9 @@ What it does (and does NOT do):
 - Fetches robots.txt, sitemap(s), llms.txt, /.well-known/security.txt, the start
   URL and up to --max-pages HTML pages of the same site (default 25, hard cap 200).
 - Checks HTTP->HTTPS / www redirects and how the site answers a non-existent URL.
-- Respects robots.txt for every page except the start URL the user asked for.
+- Respects robots.txt for crawled pages and link checks. Not applied to the start
+  URL the user asked for and to single requests for well-known files, host
+  variants and the 404 probe.
 - Never submits forms, never logs in, never sends cookies, never probes hidden
   paths, never runs page JavaScript. See netsafe.py for network hardening.
 
@@ -37,8 +39,9 @@ from netsafe import (ROBOTS_TOKEN, USER_AGENT, SafeFetcher, UnsafeURLError,  # n
                      decode_body, normalize_input_url, resolve_public, strip_url,
                      validate_url)
 
-VERSION = "0.1.1"
+VERSION = "0.1.2"
 HARD_MAX_PAGES = 200
+MAX_UNPARSED_TAIL = 8192
 HARD_MAX_LINK_CHECKS = 100
 MAX_SITEMAP_URLS = 5000
 MAX_SITEMAP_FILES = 5
@@ -395,13 +398,19 @@ def analyze_page(url: str, res: dict, base_host: str) -> tuple[dict, list[str]]:
     headers = res.get("headers", {})
     html = decode_body(res.get("body", b""), headers.get("content-type"))
     p = PageParser(res.get("final_url") or url)
+    parse_error = None
     try:
         p.feed(html)
-        p.close()
+        # close() flushes markup left unparsed at end of file. On Python versions
+        # without the CVE-2025-6069 fix it is quadratic in that leftover, so a
+        # crafted page could hang the audit: only flush a small remainder.
+        leftover = len(getattr(p, "rawdata", "") or "")
+        if leftover <= MAX_UNPARSED_TAIL:
+            p.close()
+        else:
+            parse_error = f"unterminated markup at end of page ({leftover} chars) ignored"
     except Exception as exc:  # malformed HTML must never crash the audit
         parse_error = f"{exc.__class__.__name__}"
-    else:
-        parse_error = None
 
     text = clip(" ".join(p.text_parts), 10**9) or ""
     main_text = clip(" ".join(p.main_parts), 10**9) or ""
@@ -573,15 +582,26 @@ def robots_blocks_all(text: str) -> bool:
     return False
 
 
+def robots_user_agents(text: str) -> set[str]:
+    """Lowercased User-agent values named in robots.txt (line-based, linear time)."""
+    agents = set()
+    for line in text.splitlines():
+        key, sep, value = line.split("#", 1)[0].partition(":")
+        if sep and key.strip().lower() == "user-agent":
+            agents.add(value.strip().lower())
+    return agents
+
+
 def parse_robots(text: str, origin: str, sample_paths: list[str]) -> dict:
     rp = RobotFileParser()
     rp.parse(text.splitlines())
     sitemaps = rp.site_maps() or []
+    named_agents = robots_user_agents(text)
     ai = {}
     for bot, purpose in AI_BOTS.items():
         ai[bot] = {"purpose": purpose,
                    "homepage_allowed": rp.can_fetch(bot, origin + "/"),
-                   "explicit_group": bool(re.search(r"(?im)^\s*user-agent\s*:\s*" + re.escape(bot) + r"\s*$", text))}
+                   "explicit_group": bot.lower() in named_agents}
     blanket_block = robots_blocks_all(text)
     raw_excerpt = CTRL_CHARS.sub("", text[:3000]) + ("…" if len(text) > 3000 else "")
     return {
@@ -595,13 +615,75 @@ def parse_robots(text: str, origin: str, sample_paths: list[str]) -> dict:
     }, rp
 
 
-def has_doctype_or_entity(xml_text: str) -> bool:
-    head = xml_text[:5000].upper()
-    return "<!DOCTYPE" in head or "<!ENTITY" in head
+class XMLRejected(ValueError):
+    """Raised when sitemap XML contains a DTD or entity declarations."""
+
+
+class _EnoughEntries(Exception):
+    pass
+
+
+def parse_sitemap_xml(data: bytes, limit: int = MAX_SITEMAP_URLS) -> tuple[str | None, list[tuple[str, str | None]]]:
+    """Parse a sitemap or sitemap index with expat and return (root_tag, [(loc, lastmod)]).
+
+    Any DOCTYPE, entity declaration or external entity reference aborts parsing
+    (XML bombs, XXE). Raises XMLRejected for those and ValueError for broken XML.
+    """
+    from xml.parsers import expat
+
+    parser = expat.ParserCreate()
+    parser.SetParamEntityParsing(expat.XML_PARAM_ENTITY_PARSING_NEVER)
+    root: list[str] = []
+    entries: list[tuple[str, str | None]] = []
+    state = {"depth": 0, "field": None, "loc": None, "lastmod": None}
+    buf: list[str] = []
+
+    def forbid(*_args):
+        raise XMLRejected("DOCTYPE/ENTITY declarations are not allowed")
+
+    def start(name, _attrs):
+        state["depth"] += 1
+        local = name.rsplit(":", 1)[-1]
+        if state["depth"] == 1:
+            root.append(local)
+        elif state["depth"] == 2:
+            state.update(loc=None, lastmod=None)
+        elif state["depth"] == 3 and local in ("loc", "lastmod"):
+            state["field"] = local
+            buf.clear()
+
+    def end(_name):
+        if state["depth"] == 3 and state["field"]:
+            value = "".join(buf).strip()[:2000]
+            state[state["field"]] = value or None
+            state["field"] = None
+        elif state["depth"] == 2 and state["loc"]:
+            entries.append((state["loc"], state["lastmod"]))
+            if len(entries) >= limit:
+                raise _EnoughEntries()
+        state["depth"] -= 1
+
+    def chars(text):
+        if state["field"] and len(buf) < 1000:
+            buf.append(text)
+
+    parser.StartDoctypeDeclHandler = forbid
+    parser.EntityDeclHandler = forbid
+    parser.UnparsedEntityDeclHandler = forbid
+    parser.ExternalEntityRefHandler = forbid
+    parser.StartElementHandler = start
+    parser.EndElementHandler = end
+    parser.CharacterDataHandler = chars
+    try:
+        parser.Parse(data, True)
+    except _EnoughEntries:
+        pass
+    except expat.ExpatError as exc:
+        raise ValueError(f"XML parse error: {exc}") from None
+    return (root[0] if root else None), entries
 
 
 def parse_sitemaps(fetcher: SafeFetcher, start_urls: list[str], base_host: str) -> dict:
-    import xml.etree.ElementTree as ET
     import zlib
 
     queue = list(OrderedDict.fromkeys(start_urls))
@@ -619,26 +701,15 @@ def parse_sitemaps(fetcher: SafeFetcher, start_urls: list[str], base_host: str) 
         if body[:2] == b"\x1f\x8b":
             d = zlib.decompressobj(16 + zlib.MAX_WBITS)
             body = d.decompress(body, 20 * 1024 * 1024)
-        text = decode_body(body, None)
-        if has_doctype_or_entity(text):
+        try:
+            tag, entries = parse_sitemap_xml(body, MAX_SITEMAP_URLS - len(urls))
+        except XMLRejected:
             errors.append(f"{sm}: DOCTYPE/ENTITY present - not parsed (XML bomb protection)")
             continue
-        try:
-            root = ET.fromstring(text.encode("utf-8"))
-        except ET.ParseError as exc:
-            errors.append(f"{sm}: XML parse error {exc}")
+        except ValueError as exc:
+            errors.append(f"{sm}: {clip(exc, 200)}")
             continue
-        tag = root.tag.split("}")[-1]
-        for el in root:
-            loc = lastm = None
-            for child in el:
-                name = child.tag.split("}")[-1]
-                if name == "loc" and child.text:
-                    loc = child.text.strip()
-                elif name == "lastmod" and child.text:
-                    lastm = child.text.strip()
-            if not loc:
-                continue
+        for loc, lastm in entries:
             if tag == "sitemapindex":
                 if same_site(loc, base_host):
                     queue.append(loc)

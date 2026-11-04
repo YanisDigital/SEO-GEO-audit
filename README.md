@@ -20,7 +20,7 @@ cp -r SEO-GEO-audit/seo-geo-audit ~/.claude/skills/
 
 Or copy the `seo-geo-audit/` folder into a project's `.claude/skills/`. The skill also works in other Agent Skills–compatible clients that can run Python.
 
-**Requirements:** Python 3.9+ (standard library only, no `pip install`). A browser tool (Claude's built-in browser, Claude in Chrome, or a Playwright MCP) is optional. It enables the rendered-page check and the live AI-answer checks.
+**Requirements:** Python 3.9+ (standard library only, no `pip install`; a current patch release is recommended, see [SECURITY.md](SECURITY.md)). A browser tool (Claude's built-in browser, Claude in Chrome, or a Playwright MCP) is optional. It enables the rendered-page check and the live AI-answer checks.
 
 **Recommended:** a free [PageSpeed Insights API key](https://developers.google.com/speed/docs/insights/v5/get-started) in the `PSI_API_KEY` environment variable. The anonymous API quota is shared and usually exhausted (HTTP 429). Without a key the skill falls back to reading pagespeed.web.dev in the browser, or marks Core Web Vitals as unverified.
 
@@ -55,7 +55,10 @@ seo-geo-audit/
     psi.py                    PageSpeed Insights summary -> psi.json
     render_report.py          report.json -> report.html + tz.md
   assets/report-template.html
+tests/test_security.py        offline security regression tests
 ```
+
+Run the tests from the repository root: `python -I -m unittest discover -s tests`.
 
 ## Security model
 
@@ -63,9 +66,9 @@ This skill reads content from websites you don't control, so it was designed def
 
 - **Prompt-injection aware:** all site content and AI answers are treated as data. The skill tells the agent never to follow instructions found in them and to report such text as a finding.
 - **Passive only:** no form submissions, logins, path probing, scanning or payloads.
-- **SSRF-safe networking:** only http/https on ports 80/443, all resolved IPs must be public, the connection is pinned to the validated IP (DNS-rebinding safe), and every redirect hop is re-validated.
+- **SSRF-safe networking:** only http/https on ports 80/443, all resolved IPs must be public (including IPv4 hidden inside IPv6, such as NAT64), the connection is pinned to the validated IP (DNS-rebinding safe), and every redirect hop is re-validated.
 - **Polite:** respects robots.txt and Crawl-delay, 1 request/second, 25 pages by default.
-- **Bounded:** response size caps, bounded decompression, XML entity/DOCTYPE rejection, timeouts.
+- **Bounded:** response size caps, bounded decompression, XML entity/DOCTYPE rejection, linear-time parsing of untrusted text, timeouts.
 - **No secrets in the repo:** the only optional key comes from the environment and is never logged or written.
 - **Safe output:** the HTML report escapes all content, has a strict CSP (no scripts, no external requests) and `noindex`.
 - **Client data stays out of git:** `audits/` is in `.gitignore`.

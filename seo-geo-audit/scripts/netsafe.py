@@ -5,6 +5,8 @@ Security properties (keep them when editing this file):
 - Every hostname is resolved and ALL returned addresses must be globally
   routable (blocks localhost, private LANs, link-local, cloud metadata such as
   169.254.169.254, CGNAT, multicast, reserved ranges) -> SSRF protection.
+  IPv4 addresses embedded in IPv6 (IPv4-mapped, NAT64 64:ff9b::/96) are
+  checked as IPv4; other IPv4-embedding transition ranges are refused.
 - The TCP connection is pinned to the validated IP, so a second DNS answer
   cannot redirect the request to an internal address (DNS rebinding).
 - Redirects are followed manually; every hop is re-validated; hop count capped.
@@ -37,10 +39,28 @@ class UnsafeURLError(ValueError):
     """Raised when a URL must not be fetched."""
 
 
+# IPv6 ranges that carry an IPv4 address inside them. ipaddress.is_global does
+# not look at the embedded address, so "64:ff9b::7f00:1" (NAT64 for 127.0.0.1)
+# would count as public. The well-known NAT64 prefix is checked as the IPv4 it
+# embeds; the other transition ranges are refused outright.
+_NAT64_WKP = ipaddress.ip_network("64:ff9b::/96")
+_REFUSED_V6 = (
+    ipaddress.ip_network("::/96"),          # IPv4-compatible (deprecated)
+    ipaddress.ip_network("64:ff9b:1::/48"),  # local-use NAT64
+    ipaddress.ip_network("2001::/32"),       # Teredo
+    ipaddress.ip_network("2002::/16"),       # 6to4
+)
+
+
 def _is_public_ip(raw: str) -> bool:
     ip = ipaddress.ip_address(raw.split("%", 1)[0])
-    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
-        ip = ip.ipv4_mapped
+    if isinstance(ip, ipaddress.IPv6Address):
+        if ip.ipv4_mapped is not None:
+            ip = ip.ipv4_mapped
+        elif ip in _NAT64_WKP:
+            ip = ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF)
+        elif any(ip in net for net in _REFUSED_V6):
+            return False
     return ip.is_global and not ip.is_multicast
 
 

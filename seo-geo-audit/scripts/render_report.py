@@ -6,8 +6,10 @@ Usage:
 
 Security: every value is HTML-escaped; links are emitted only for http(s) URLs
 and carry rel="noopener noreferrer nofollow"; the page ships a strict CSP with
-no scripts, no external resources and no forms. In Markdown, angle brackets
-outside code are escaped and code fences are sized so content cannot break out.
+no scripts, no external resources and no forms. In Markdown, raw HTML, links,
+images and stray backticks outside code are escaped, line breaks inside values
+are flattened, and code fences are sized so content cannot break out. All
+parsing of untrusted text is linear-time (no backtracking regexes).
 See references/report-spec.md for the report.json schema.
 """
 
@@ -279,18 +281,54 @@ def render_html(d: dict, L: dict) -> str:
 
 # ----------------------------------------------------------------------------- Markdown
 
-CODE_SPAN = re.compile(r"(`+)(.+?)\1", re.S)
+TICK_RUN = re.compile(r"`+")
+MD_ESCAPES = {"\\": "\\\\", "`": "\\`", "[": "\\[", "]": "\\]", "<": "&lt;", ">": "&gt;"}
+
+
+def code_spans(text: str) -> list[tuple[int, int]]:
+    """(start, end) of inline code spans, CommonMark style, in linear time.
+
+    A run of N backticks opens a span that closes at the next run of exactly N
+    backticks; a run with no partner is literal text.
+    """
+    runs = [(m.start(), m.end()) for m in TICK_RUN.finditer(text)]
+    partner: list[int | None] = [None] * len(runs)
+    next_of_len: dict[int, int] = {}
+    for i in range(len(runs) - 1, -1, -1):
+        n = runs[i][1] - runs[i][0]
+        partner[i] = next_of_len.get(n)
+        next_of_len[n] = i
+    spans, i = [], 0
+    while i < len(runs):
+        j = partner[i]
+        if j is None:
+            i += 1
+            continue
+        spans.append((runs[i][0], runs[j][1]))
+        i = j + 1
+    return spans
+
+
+def _md_escape(chunk: str) -> str:
+    return "".join(MD_ESCAPES.get(ch, ch) for ch in chunk)
 
 
 def md_text(value) -> str:
-    """Escape raw HTML outside inline code spans; keep code spans verbatim."""
-    text = s(value)
+    """Make untrusted text safe for one line of Markdown.
+
+    Line breaks are flattened (no block-level constructs such as HTML blocks).
+    Outside code spans, raw HTML, link/image brackets, backslashes and stray
+    backticks are escaped, so the result's code spans are self-contained and
+    stay safe when several values are joined on one line. Code spans are kept
+    verbatim: renderers show their content as literal text.
+    """
+    text = " ".join(s(value).splitlines())
     parts, last = [], 0
-    for m in CODE_SPAN.finditer(text):
-        parts.append(text[last:m.start()].replace("<", "&lt;").replace(">", "&gt;"))
-        parts.append(m.group(0))
-        last = m.end()
-    parts.append(text[last:].replace("<", "&lt;").replace(">", "&gt;"))
+    for start, end in code_spans(text):
+        parts.append(_md_escape(text[last:start]))
+        parts.append(text[start:end])
+        last = end
+    parts.append(_md_escape(text[last:]))
     return "".join(parts)
 
 

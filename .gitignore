@@ -6,6 +6,11 @@ audits/
 .env
 .env.*
 *.key
+*.pem
+*.p12
+*.pfx
+credentials*.json
+service-account*.json
 
 # Python
 __pycache__/
