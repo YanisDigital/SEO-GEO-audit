@@ -37,7 +37,7 @@ from netsafe import (ROBOTS_TOKEN, USER_AGENT, SafeFetcher, UnsafeURLError,  # n
                      decode_body, normalize_input_url, resolve_public, strip_url,
                      validate_url)
 
-VERSION = "1.0.0"
+VERSION = "0.1.1"
 HARD_MAX_PAGES = 200
 HARD_MAX_LINK_CHECKS = 100
 MAX_SITEMAP_URLS = 5000
@@ -656,7 +656,14 @@ def parse_sitemaps(fetcher: SafeFetcher, start_urls: list[str], base_host: str) 
             "capped": len(urls) >= MAX_SITEMAP_URLS, "_all": urls}
 
 
-def check_variants(fetcher: SafeFetcher, scheme: str, host: str) -> list[dict]:
+def check_variants(fetcher: SafeFetcher, scheme: str, host: str) -> tuple[list[dict], bool, bool | None]:
+    """Probe http/https x bare/www variants of the host.
+
+    A variant whose hostname has no DNS record (typical for www.<subdomain>) is
+    recorded as skipped: it is not an error and does not count against
+    consolidation. Returns (variants, consolidated, http_redirects_to_https);
+    the last value is None when no http variant could be tested.
+    """
     apex = site_key(host)
     variants = OrderedDict.fromkeys([f"http://{apex}/", f"http://www.{apex}/",
                                      f"https://{apex}/", f"https://www.{apex}/"])
@@ -665,14 +672,23 @@ def check_variants(fetcher: SafeFetcher, scheme: str, host: str) -> list[dict]:
         res = fetcher.fetch(v, method="HEAD")
         if res.get("status") in (405, 501):
             res = fetcher.fetch(v, max_bytes=64 * 1024)
-        out.append({"url": v, "status": res.get("status"), "final_url": res.get("final_url"),
-                    "hops": len(res.get("redirect_chain", [])),
-                    "chain": [{"status": c["status"], "location": clip(c["location"], 200)}
-                              for c in res.get("redirect_chain", [])],
-                    "error": res.get("error")})
-    finals = {clean_url(o["final_url"]) for o in out if o.get("final_url") and not o.get("error")
+        err = res.get("error") or ""
+        entry = {"url": v, "status": res.get("status"), "final_url": res.get("final_url"),
+                 "hops": len(res.get("redirect_chain", [])),
+                 "chain": [{"status": c["status"], "location": clip(c["location"], 200)}
+                           for c in res.get("redirect_chain", [])],
+                 "error": err or None}
+        if "DNS resolution failed" in err:
+            entry.update(skipped="no DNS record for this hostname (not an issue)", error=None)
+        out.append(entry)
+    tested = [o for o in out if not o.get("skipped")]
+    finals = {clean_url(o["final_url"]) for o in tested if o.get("final_url") and not o.get("error")
               and (o.get("status") or 0) < 400}
-    return out, len(finals) <= 1
+    http_tested = [o for o in tested if o["url"].startswith("http://") and o.get("final_url")
+                   and not o.get("error")]
+    http_to_https = (all(o["final_url"].startswith("https://") for o in http_tested)
+                     if http_tested else None)
+    return out, len(finals) <= 1, http_to_https
 
 
 SECURITY_HEADERS = ["strict-transport-security", "content-security-policy", "x-content-type-options",
@@ -858,7 +874,7 @@ def main() -> int:
                  "soft_404_suspected": nf.get("status") == 200,
                  "redirects_to_home": bool(nf.get("redirect_chain")) and clean_url(nf.get("final_url", "")) == clean_url(final_home)}
 
-    variants, variants_consistent = check_variants(fetcher, fh.scheme, base_host)
+    variants, variants_consistent, http_to_https = check_variants(fetcher, fh.scheme, base_host)
 
     # site-level aggregates
     real_pages = [p for p in pages if "title" in p]
@@ -897,6 +913,7 @@ def main() -> int:
         "llms_txt": llm_files,
         "host_variants": variants,
         "host_variants_consolidated": variants_consistent,
+        "http_redirects_to_https": http_to_https,
         "not_found_handling": not_found,
         "security": security,
         "site_summary": {

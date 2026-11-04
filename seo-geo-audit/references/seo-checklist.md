@@ -27,7 +27,7 @@ observation). Skip checks that do not apply to the business type.
 | Important paths blocked | `robots_txt.sample_paths_blocked_for_googlebot`, `crawl_issues.blocked_by_robots` | key templates or CSS/JS blocked |
 | Sitemap exists and declared | `sitemap.url_count`, `robots_txt.sitemaps_declared` | missing, not declared in robots, errors, off-site or http:// URLs, no `lastmod` |
 | Status codes | `site_summary.status_codes`, `link_check` | 4xx/5xx on linked pages, chains > 1 hop |
-| Host consolidation | `host_variants`, `host_variants_consolidated` | http/https/www/non-www resolve to different final URLs, or 302 instead of 301/308 |
+| Host consolidation | `host_variants`, `host_variants_consolidated`, `http_redirects_to_https` | http/https/www/non-www resolve to different final URLs, `http_redirects_to_https` is false (http stays on http), or 302 instead of 301/308. Variants marked `skipped` have no DNS record (normal for `www.<subdomain>`): ignore them |
 | 404 handling | `not_found_handling` | `soft_404_suspected` (200 on garbage URL) or redirect of all 404s to home |
 | noindex | `site_summary.pages_noindex`, `x_robots_tag` | noindex on pages that should rank |
 | Canonical | `canonical`, `canonical_self`, `pages_without_canonical` | missing on key pages, pointing to another URL without reason, pointing to http or redirected URL |
