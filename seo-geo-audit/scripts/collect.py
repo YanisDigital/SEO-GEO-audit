@@ -39,7 +39,7 @@ from netsafe import (ROBOTS_TOKEN, USER_AGENT, SafeFetcher, UnsafeURLError,  # n
                      decode_body, normalize_input_url, resolve_public, strip_url,
                      validate_url)
 
-VERSION = "0.1.2"
+VERSION = "0.1.3"
 HARD_MAX_PAGES = 200
 MAX_UNPARSED_TAIL = 8192
 HARD_MAX_LINK_CHECKS = 100
@@ -135,6 +135,8 @@ class PageParser(HTMLParser):
         self.lang = None
         self.title_parts: list[str] = []
         self.in_title = False
+        self._title_done = False
+        self.svg_depth = 0
         self.meta: dict[str, str] = {}
         self.link_rels: list[dict] = []
         self.headings: list[tuple[int, str]] = []
@@ -195,10 +197,14 @@ class PageParser(HTMLParser):
         a = {k.lower(): (v if v is not None else "") for k, v in attrs}
         if tag in SKIP_TEXT_TAGS and tag not in VOID_TAGS:
             self.skip_depth += 1
+        if tag in ("svg", "math"):
+            self.svg_depth += 1
         if tag == "html":
             self.lang = a.get("lang") or a.get("xml:lang")
         elif tag == "title":
-            self.in_title = True
+            # Only the first document <title>; <title> inside inline SVG/MathML
+            # is an accessible name for the graphic, not the page title.
+            self.in_title = self.svg_depth == 0 and not self._title_done
         elif tag == "meta":
             key = (a.get("name") or a.get("property") or a.get("http-equiv") or "").lower().strip()
             if key and "content" in a and key not in self.meta:
@@ -287,11 +293,19 @@ class PageParser(HTMLParser):
         self.handle_starttag(tag, attrs)
         if tag in SKIP_TEXT_TAGS and tag not in VOID_TAGS:
             self.skip_depth = max(0, self.skip_depth - 1)
+        if tag in ("svg", "math"):
+            self.svg_depth = max(0, self.svg_depth - 1)
+        elif tag == "title":
+            self.in_title = False
 
     def handle_endtag(self, tag):
         if tag in SKIP_TEXT_TAGS and tag not in VOID_TAGS:
             self.skip_depth = max(0, self.skip_depth - 1)
+        if tag in ("svg", "math"):
+            self.svg_depth = max(0, self.svg_depth - 1)
         if tag == "title":
+            if self.in_title:
+                self._title_done = True
             self.in_title = False
         elif tag == "script":
             if self._in_jsonld:
@@ -727,6 +741,17 @@ def parse_sitemaps(fetcher: SafeFetcher, start_urls: list[str], base_host: str) 
             "capped": len(urls) >= MAX_SITEMAP_URLS, "_all": urls}
 
 
+def head_unreliable(res: dict) -> bool:
+    """True if a HEAD answer should be re-checked with GET.
+
+    Some servers answer HEAD with 4xx/5xx (or drop it) while GET works, so a
+    failed HEAD is never reported as a broken page on its own.
+    """
+    if res.get("error"):
+        return not res["error"].startswith("blocked:")
+    return (res.get("status") or 0) >= 400
+
+
 def check_variants(fetcher: SafeFetcher, scheme: str, host: str) -> tuple[list[dict], bool, bool | None]:
     """Probe http/https x bare/www variants of the host.
 
@@ -741,7 +766,7 @@ def check_variants(fetcher: SafeFetcher, scheme: str, host: str) -> tuple[list[d
     out = []
     for v in variants:
         res = fetcher.fetch(v, method="HEAD")
-        if res.get("status") in (405, 501):
+        if head_unreliable(res):
             res = fetcher.fetch(v, max_bytes=64 * 1024)
         err = res.get("error") or ""
         entry = {"url": v, "status": res.get("status"), "final_url": res.get("final_url"),
@@ -933,7 +958,7 @@ def main() -> int:
         pool = [u for u in OrderedDict.fromkeys(all_internal) if u not in fetched and allowed(u)]
         for u in pool[:link_checks]:
             res = fetcher.fetch(u, method="HEAD")
-            if res.get("status") in (405, 501, 403):
+            if head_unreliable(res):
                 res = fetcher.fetch(u, max_bytes=32 * 1024)
             link_results.append({"url": u, "status": res.get("status"),
                                  "hops": len(res.get("redirect_chain", [])), "error": res.get("error")})

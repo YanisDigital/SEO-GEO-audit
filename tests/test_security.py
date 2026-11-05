@@ -173,6 +173,26 @@ class HTMLParsingTests(unittest.TestCase):
         self.assertEqual(page["word_count"], 3)
 
 
+    def test_svg_title_is_not_the_page_title(self):
+        html = (b"<html><head><title>Real Title</title></head><body>"
+                b"<svg><title>logo</title><path d='M0'/></svg><svg/>"
+                b"<p>Text</p><title>stray</title></body></html>")
+        page, _ = collect.analyze_page("https://example.com/", self.page(html), "example.com")
+        self.assertEqual(page["title"], "Real Title")
+
+
+class HeadFallbackTests(unittest.TestCase):
+    def test_failed_head_is_rechecked(self):
+        self.assertTrue(collect.head_unreliable({"status": 404}))
+        self.assertTrue(collect.head_unreliable({"status": 405}))
+        self.assertTrue(collect.head_unreliable({"error": "network_error: timeout"}))
+
+    def test_good_or_blocked_head_is_final(self):
+        self.assertFalse(collect.head_unreliable({"status": 200}))
+        self.assertFalse(collect.head_unreliable({"status": 301}))
+        self.assertFalse(collect.head_unreliable({"error": "blocked: DNS resolution failed"}))
+
+
 class MarkdownTests(unittest.TestCase):
     md = staticmethod(render_report.md_text)
 
