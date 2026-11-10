@@ -1,8 +1,9 @@
 # Report specification
 
 You write `report.json`; `scripts/render_report.py` turns it into `report.html`
-(for reading and sharing) and `tz.md` (the technical brief / action plan for the
-people who will implement it). Do not hand-write HTML: the renderer escapes
+(for reading and sharing), `tz.md` (the technical brief / action plan for the
+people who will implement it) and `tasks.csv` (the same tasks for import into
+Jira, Trello, Asana or a spreadsheet). Do not hand-write HTML: the renderer escapes
 everything and applies a strict CSP, which is what keeps third-party text from
 the audited site from becoming active content in the report.
 
@@ -33,22 +34,25 @@ that is what practitioners use.
     "cms": "WordPress"
   },
   "summary": "3-5 sentences: overall state, the 2-3 things that matter most, expected effect of the 'now' wave.",
-  "overall_score": 64,
-  "overall_comment": "one line",
+  "headline": {
+    "readiness": "one line on the site-side state",
+    "visibility": "one line on what the live checks showed"
+  },
   "scores": [
-    {"area": "Technical SEO", "score": 72, "comment": "one line why"}
+    {"key": "technical", "area": "Technical SEO", "comment": "one line why"}
   ],
   "strengths": [
     {"title": "short", "detail": "1-2 sentences", "evidence": "URL / field / observation"}
   ],
   "weaknesses": [
     {"title": "short", "detail": "impact in business terms", "evidence": "URL / field / value",
-     "severity": "critical|high|medium|low", "area": "Technical SEO"}
+     "severity": "critical|high|medium|low", "area_key": "technical", "area": "Technical SEO"}
   ],
   "geo_visibility": {
     "summary": "2-3 sentences on patterns",
     "checks": [
-      {"engine": "Perplexity", "query": "...", "mentioned": true, "cited_url": "https://...",
+      {"engine": "Perplexity", "query": "...", "query_type": "brand|non_brand",
+       "mentioned": true, "cited_url": "https://...",
        "competitors_named": ["A", "B"], "note": "..."}
     ]
   },
@@ -70,29 +74,56 @@ that is what practitioners use.
 into the report language (titles, wave names, severity names, yes/no, footer).
 Missing keys fall back to English, so for a non-English report provide all of them.
 
+**scores**: one entry per applicable area, with the `key` from the table in
+section 2 and a localized `area` name. Don't write the numbers: the renderer
+computes them. **weaknesses**: set `area_key` to the area the issue deducts
+from (or use exactly the same `area` text as the score entry). Weaknesses
+about live AI/search visibility use `area_key: "visibility"`: they are listed
+but deduct nothing, because that score is measured directly.
+
 Omit sections you have no data for (for example, `competitors` when none were
 given). Never fill them with placeholders.
 
 ## 2. Scoring
 
-Areas (drop the ones that do not apply, e.g. Local SEO for an online-only SaaS):
+The report leads with two headline scores, because a technically sound site
+can still be invisible, and one blended number hides that:
 
-| Area | Based on |
-|---|---|
-| Technical SEO | indexability, crawlability, redirects, canonicals, sitemaps, status codes |
-| On-page & content | titles, descriptions, headings, content depth, E-E-A-T |
-| Structured data | coverage and validity of schema |
-| Performance (CWV) | PSI field data first, lab data second |
-| GEO/AEO readiness | see geo-aeo-checklist.md section 7 |
-| AI visibility | live checks only; omit if they could not run |
-| Trust & security | site-security.md |
-| Local SEO | only for businesses with a physical presence or service area |
+- **Site readiness**: how well the site itself is built for search and AI
+  engines. Weighted average of the area scores below.
+- **Real visibility**: how often answer engines and search name or cite the
+  business for non-brand queries. Measured by the live checks.
 
-Method, so scores are reproducible: start each area at 100 and subtract per
-distinct issue: critical −25, high −12, medium −6, low −2 (floor 0). An issue
-that affects most pages counts once at its severity, not per page.
-`overall_score` = rounded average of the area scores, with Technical SEO and
-GEO/AEO readiness weighted ×1.5. Bands: 80-100 good, 50-79 needs work, < 50 poor.
+Areas (drop the ones that do not apply, e.g. `local` for an online-only SaaS):
+
+| key | Area | Based on |
+|---|---|---|
+| `technical` | Technical SEO | indexability, crawlability, redirects, canonicals, sitemaps, status codes |
+| `onpage` | On-page & content | titles, descriptions, headings, content depth, E-E-A-T |
+| `schema` | Structured data | coverage and validity of schema |
+| `cwv` | Performance (CWV) | PSI field data first, lab data second |
+| `geo` | GEO/AEO readiness | see geo-aeo-checklist.md section 7 |
+| `trust` | Trust & security | site-security.md |
+| `local` | Local SEO | only for businesses with a physical presence or service area |
+
+The renderer does the arithmetic, so scores are reproducible and every point
+can be traced:
+
+- **Area score** = 100 minus the deductions of the weaknesses in that area:
+  critical −25, high −12, medium −6, low −2 (floor 0). The report lists the
+  deductions under each area. An issue that affects most pages is one weakness
+  at its severity, not one per page. Severities are the score, so choose them
+  with the severity guide in seo-checklist.md section 10.
+- **Site readiness** = weighted average of the area scores, `technical` and
+  `geo` ×1.5, rounded half up.
+- **Real visibility** = average over non-brand checks with a result: cited with
+  a link to the site 1, named without a link 0.6, `partial` 0.3, absent 0;
+  times 100. Checks marked unavailable (e.g. "n/a") are skipped. With fewer than
+  3 such checks the score shows as "not measured". Brand queries don't count
+  here (they test accuracy, not visibility); report wrong facts from them as
+  weaknesses.
+
+Bands: 80-100 good, 50-79 needs work, < 50 poor.
 
 ## 3. Writing rules
 

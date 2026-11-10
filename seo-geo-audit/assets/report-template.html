@@ -39,6 +39,14 @@ h3{font-size:16px;margin:0 0 6px}
 .s-ok .num{color:var(--ok)}.s-ok .bar>span{background:var(--ok)}
 .s-bad .num{color:var(--bad)}.s-bad .bar>span{background:var(--bad)}
 .score p{margin:0;color:var(--muted);font-size:13.5px}
+.headline{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;margin:8px 0 8px}
+.score.big{padding:20px 22px}.score.big h3{font-size:17px}.score.big .num{font-size:40px;line-height:1}
+.score.big .bar{height:10px}.score .basis{margin-top:6px;color:var(--text);font-weight:600}
+.score .comment{margin-top:6px;color:var(--text)}
+.s-na .num{color:var(--muted)}
+details.ded{margin-top:8px;font-size:13px}details.ded>summary{cursor:pointer;color:var(--muted);font-weight:600}
+details.ded ul{list-style:none;padding:0;margin:6px 0 0}details.ded li{margin:4px 0;line-height:1.45}
+details.ded .pts{display:inline-block;min-width:32px;font-weight:700;font-variant-numeric:tabular-nums}
 .list{display:grid;gap:10px}
 .item{border-left:4px solid var(--border)}
 .item.good{border-left-color:var(--good)}
@@ -71,7 +79,7 @@ tr:last-child td{border-bottom:none}
 a{color:var(--accent);overflow-wrap:anywhere}
 .muted{color:var(--muted)}
 footer{margin-top:48px;color:var(--muted);font-size:13px;border-top:1px solid var(--border);padding-top:16px}
-@media print{body{background:#fff}.card,details.task{box-shadow:none}details.task{break-inside:avoid}details.task:not([open])>.body{display:block}}
+@media print{body{background:#fff}.card,details.task{box-shadow:none}details.task{break-inside:avoid}details.task:not([open])>.body,details.ded:not([open])>ul{display:block}}
 @media (max-width:560px){h1{font-size:23px}.wrap{padding-top:20px}}
 </style>
 </head>

@@ -2,8 +2,8 @@
 
 Give Claude a website URL and get:
 
-- **`report.html`** — a self-contained report: scores by area, strengths, weaknesses with evidence, a snapshot of visibility in AI answers (Perplexity, Google AI Overviews, ChatGPT), optional competitor comparison.
-- **`tz.md`** — a developer-ready action plan: tasks grouped into *do now / next 30 days / strategic*, each with steps, a code or text example, and acceptance criteria.
+- **`report.html`** — a self-contained report: two headline scores (*Site readiness* and *Real visibility*, because a technically sound site can still be invisible in AI answers), scores by area with the deductions behind them, strengths, weaknesses with evidence, a snapshot of visibility in AI answers (Perplexity, Google AI Overviews, ChatGPT), optional competitor comparison.
+- **`tz.md`** — a developer-ready action plan: tasks grouped into *do now / next 30 days / strategic*, each with steps, a code or text example, and acceptance criteria. The same tasks are exported to **`tasks.csv`** for Jira, Trello, Asana or a spreadsheet.
 
 It covers classic SEO (indexability, canonicals, sitemaps, on-page, structured data, Core Web Vitals, mobile/JS rendering, hreflang, local) and **GEO/AEO** (AI crawler access in robots.txt, rendering for non-JS crawlers, answer-shaped content, entity signals, llms.txt, live answer-engine checks). It also checks passive trust and security hygiene (HTTPS, security headers, mixed content, disclosed versions).
 
@@ -37,7 +37,7 @@ Restrict the key in Google Cloud Console to the PageSpeed Insights API only.
 
 > Audit https://example.com — competitors: competitor-a.com, competitor-b.com, region Kyiv
 
-Outputs go to `./audits/<domain>-<date>/` (`crawl.json`, `psi.json`, `report.json`, `report.html`, `tz.md`).
+Outputs go to `./audits/<domain>-<date>/` (`crawl.json`, `psi.json`, `report.json`, `report.html`, `tz.md`, `tasks.csv`).
 
 ## Layout
 
@@ -53,9 +53,9 @@ seo-geo-audit/
     netsafe.py                hardened HTTP client (SSRF-safe, size/time caps)
     collect.py                passive crawler -> crawl.json
     psi.py                    PageSpeed Insights summary -> psi.json
-    render_report.py          report.json -> report.html + tz.md
+    render_report.py          report.json -> report.html + tz.md + tasks.csv
   assets/report-template.html
-tests/test_security.py        offline security regression tests
+tests/test_security.py        offline security and regression tests
 ```
 
 Run the tests from the repository root: `python -I -m unittest discover -s tests`.
@@ -70,7 +70,7 @@ This skill reads content from websites you don't control, so it was designed def
 - **Polite:** respects robots.txt and Crawl-delay, 1 request/second, 25 pages by default.
 - **Bounded:** response size caps, bounded decompression, XML entity/DOCTYPE rejection, linear-time parsing of untrusted text, timeouts.
 - **No secrets in the repo:** the only optional key comes from the environment and is never logged or written.
-- **Safe output:** the HTML report escapes all content, has a strict CSP (no scripts, no external requests) and `noindex`.
+- **Safe output:** the HTML report escapes all content, has a strict CSP (no scripts, no external requests) and `noindex`. CSV cells that a spreadsheet could run as formulas are neutralised.
 - **Client data stays out of git:** `audits/` is in `.gitignore`.
 
 ## Limitations

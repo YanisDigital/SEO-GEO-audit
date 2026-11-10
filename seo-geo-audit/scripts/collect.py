@@ -39,7 +39,7 @@ from netsafe import (ROBOTS_TOKEN, USER_AGENT, SafeFetcher, UnsafeURLError,  # n
                      decode_body, normalize_input_url, resolve_public, strip_url,
                      validate_url)
 
-VERSION = "0.1.3"
+VERSION = "0.2.0"
 HARD_MAX_PAGES = 200
 MAX_UNPARSED_TAIL = 8192
 HARD_MAX_LINK_CHECKS = 100
@@ -752,6 +752,62 @@ def head_unreliable(res: dict) -> bool:
     return (res.get("status") or 0) >= 400
 
 
+CHALLENGE_MARKERS = ("just a moment", "attention required", "access denied", "are you a robot",
+                     "verify you are human", "ddos protection", "request blocked", "captcha")
+
+
+def sanity_flags(pages: list, link_results: list, failed: list, sitemap_urls: int, max_pages: int) -> list:
+    """Patterns that more often mean a collection problem than a real site issue.
+
+    Each flag tells the agent to confirm the related findings another way (in a
+    browser) before reporting them.
+    """
+    flags = []
+    real = [p for p in pages if "title" in p]
+    attempted = len(pages) + len(failed)
+
+    def add(code, detail):
+        flags.append({"code": code, "detail": detail})
+
+    blocked = [p for p in pages if (p.get("status") or 0) in (403, 429, 503)]
+    challenge = [p for p in real
+                 if any(m in (p.get("title") or "").lower() for m in CHALLENGE_MARKERS)]
+    if blocked or challenge:
+        add("bot_protection_suspected",
+            f"{len(blocked)} page(s) answered 403/429/503 and {len(challenge)} look like a bot challenge; "
+            "a CDN/WAF may treat crawlers (and possibly AI bots) differently from browsers")
+    if attempted >= 4 and len(failed) / attempted > 0.3:
+        add("many_fetch_failures", f"{len(failed)} of {attempted} page requests failed")
+    if len(real) < min(5, max_pages) and sitemap_urls >= 10:
+        add("few_pages_reached", f"only {len(real)} HTML page(s) analysed although the sitemap lists {sitemap_urls} URLs")
+    if len(real) >= 5:
+        titles = Counter(p.get("title") for p in real if p.get("title"))
+        if titles:
+            top, n = titles.most_common(1)[0]
+            if n / len(real) >= 0.8:
+                add("identical_titles", f"{n} of {len(real)} pages share one title ({clip(top, 80)!r}): "
+                                        "a template bug, or the crawler received the same error/consent page")
+        lengths = sorted(len(p.get("title") or "") for p in real)
+        median = lengths[len(lengths) // 2]
+        if median > 100:
+            add("long_titles", f"median title length is {median} characters: check that the title parser "
+                               "did not pick up other text")
+        thin = [p for p in real if (p.get("word_count") or 0) < 50]
+        if len(thin) / len(real) >= 0.7:
+            add("mostly_empty_pages", f"{len(thin)} of {len(real)} pages have under 50 words in raw HTML: "
+                                      "content is likely rendered by JavaScript, or the crawler was served a stub")
+    broken = [r for r in link_results
+              if (r.get("error") and not str(r["error"]).startswith("blocked:"))
+              or (r.get("status") or 0) >= 400]
+    if len(link_results) >= 5 and len(broken) / len(link_results) >= 0.5:
+        add("most_links_broken", f"{len(broken)} of {len(link_results)} checked links failed: "
+                                 "may be bot blocking rather than real broken links")
+    parse_errors = [p for p in real if p.get("parse_error")]
+    if parse_errors:
+        add("parse_errors", f"{len(parse_errors)} page(s) could not be fully parsed")
+    return flags
+
+
 def check_variants(fetcher: SafeFetcher, scheme: str, host: str) -> tuple[list[dict], bool, bool | None]:
     """Probe http/https x bare/www variants of the host.
 
@@ -1036,6 +1092,7 @@ def main() -> int:
             "avg_ttfb_ms": int(sum(p.get("ttfb_ms") or 0 for p in real_pages) / max(1, len(real_pages))),
             "max_html_bytes": max((p.get("html_bytes") or 0) for p in real_pages) if real_pages else 0,
         },
+        "sanity_flags": sanity_flags(pages, link_results, failed, sitemap["url_count"], max_pages),
         "crawl_issues": {"blocked_by_robots": blocked_by_robots[:30], "non_html": non_html[:30],
                          "failed": failed[:30]},
         "link_check": link_results,
@@ -1047,6 +1104,8 @@ def main() -> int:
     print(f"OK: {len(real_pages)} pages analysed, {fetcher.request_count} requests, {report['duration_s']}s")
     print(f"robots.txt: {robots_info.get('status')} | sitemap URLs: {s['sitemap_urls']} | "
           f"llms.txt: {llm_files['/llms.txt'].get('status')} | https: {security['https_final']}")
+    for flag in report["sanity_flags"]:
+        print(f"CHECK: {flag['code']}: {flag['detail']}")
     print(f"Wrote {args.out}")
     return 0
 

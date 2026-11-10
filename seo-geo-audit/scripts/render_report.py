@@ -1,22 +1,28 @@
 #!/usr/bin/env python3
-"""Render report.json into a self-contained report.html and a developer-ready tz.md.
+"""Render report.json into report.html, a developer-ready tz.md and tasks.csv.
 
 Usage:
     python -I render_report.py audits/<dir>/report.json --out-dir audits/<dir>
 
 Security: every value is HTML-escaped; links are emitted only for http(s) URLs
 and carry rel="noopener noreferrer nofollow"; the page ships a strict CSP with
-no scripts, no external resources and no forms. In Markdown, raw HTML, links,
+no scripts, no external resources and no forms. In CSV, cells that a
+spreadsheet could read as a formula are prefixed with an apostrophe. In Markdown, raw HTML, links,
 images and stray backticks outside code are escaped, line breaks inside values
 are flattened, and code fences are sized so content cannot break out. All
 parsing of untrusted text is linear-time (no backtracking regexes).
+Area scores, "Site readiness" and "Real visibility" are computed here from the
+weaknesses and live checks (references/report-spec.md section 2), so every
+number in the report can be traced back to its inputs.
 See references/report-spec.md for the report.json schema.
 """
 
 from __future__ import annotations
 
 import argparse
+import csv
 import html
+import io
 import json
 import os
 import re
@@ -34,6 +40,17 @@ DEFAULT_LABELS = {
     "summary": "Executive summary",
     "scores": "Scores by area",
     "overall": "Overall",
+    "readiness": "Site readiness",
+    "readiness_hint": "How well the site itself is built for search and AI engines (weighted average of the area scores).",
+    "visibility": "Real visibility",
+    "visibility_hint": "How often AI and search answers name or cite the business for non-brand queries.",
+    "visibility_basis": "{hits} of {total} non-brand checks mention or cite the business",
+    "not_measured": "not measured",
+    "deductions": "Deductions",
+    "no_deductions": "No issues found in this area",
+    "wave": "Wave",
+    "priority": "Priority",
+    "task_title": "Task",
     "strengths": "Strengths",
     "weaknesses": "Weaknesses",
     "tasks": "Action plan (technical brief)",
@@ -74,6 +91,12 @@ DEFAULT_LABELS = {
 
 WAVES = [("now", "wave_now"), ("30d", "wave_30d"), ("strategic", "wave_strategic")]
 SEVERITIES = ("critical", "high", "medium", "low")
+DEDUCTION = {"critical": 25, "high": 12, "medium": 6, "low": 2}
+AREA_WEIGHT = {"technical": 1.5, "geo": 1.5}
+VISIBILITY_KEYS = ("visibility", "ai_visibility")  # measured by live checks, not by deductions
+NON_BRAND = ("non_brand", "nonbrand", "generic")
+MIN_VISIBILITY_CHECKS = 3
+CSV_FORMULA_START = ("=", "+", "-", "@", "\t", "\r", "\uff1d", "\uff0b", "\uff0d", "\uff20")
 URL_RX = re.compile(r"^https?://[^\s<>\"'`\\]+$", re.I)
 LANG_RX = re.compile(r"^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})?$")
 CTRL_RX = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
@@ -121,6 +144,82 @@ def norm_sev(v) -> str:
     return v if v in SEVERITIES else "medium"
 
 
+def half_up(x: float) -> int:
+    return int(x + 0.5)
+
+
+def norm_key(v) -> str:
+    return s(v).strip().lower().replace("-", "_").replace(" ", "_")
+
+
+def mention(v) -> str | None:
+    key = s(v).strip().lower()
+    if v is True or key in ("true", "yes"):
+        return "yes"
+    if v is False or key in ("false", "no"):
+        return "no"
+    if key in ("partial", "partly"):
+        return "partial"
+    return None  # not checked / engine unavailable
+
+
+def weakness_matches(w: dict, sc: dict) -> bool:
+    key = norm_key(sc.get("key"))
+    if key and norm_key(w.get("area_key")) == key:
+        return True
+    area = s(sc.get("area")).strip()
+    return bool(area) and s(w.get("area")).strip() == area
+
+
+def compute_scores(d: dict) -> tuple[list[dict], int | None, list[str]]:
+    """Area scores from weakness deductions, plus the weighted site-readiness score."""
+    weaknesses = [w for w in as_list(d.get("weaknesses")) if isinstance(w, dict)]
+    out, warnings = [], []
+    for sc in as_list(d.get("scores")):
+        if not isinstance(sc, dict):
+            continue
+        key = norm_key(sc.get("key"))
+        deds = [{"severity": norm_sev(w.get("severity")), "points": DEDUCTION[norm_sev(w.get("severity"))],
+                 "title": w.get("title")} for w in weaknesses if weakness_matches(w, sc)]
+        deds.sort(key=lambda x: -x["points"])
+        score = max(0, 100 - sum(x["points"] for x in deds))
+        stated = clamp_score(sc.get("score"))
+        if stated is not None and stated != score and key not in VISIBILITY_KEYS:
+            warnings.append(f'area "{s(sc.get("area"))}": stated score {stated} replaced by computed {score} '
+                            f'(100 minus {len(deds)} deduction(s))')
+        out.append(dict(sc, key=key, score=score, deductions=deds))
+    rated = [x for x in out if x["key"] not in VISIBILITY_KEYS]
+    readiness = None
+    if rated:
+        total_w = sum(AREA_WEIGHT.get(x["key"], 1.0) for x in rated)
+        readiness = half_up(sum(x["score"] * AREA_WEIGHT.get(x["key"], 1.0) for x in rated) / total_w)
+    unmatched = [s(w.get("title")) for w in weaknesses
+                 if norm_key(w.get("area_key")) not in VISIBILITY_KEYS
+                 and not any(weakness_matches(w, x) for x in out)]
+    if out and unmatched:
+        warnings.append(f"{len(unmatched)} weakness(es) match no scored area and deduct nothing: "
+                        + "; ".join(unmatched[:5]))
+    return out, readiness, warnings
+
+
+def compute_visibility(d: dict) -> dict:
+    """Real visibility from non-brand live checks: cited 1, named 0.6, partly 0.3, absent 0."""
+    checks = [c for c in as_list((d.get("geo_visibility") or {}).get("checks")) if isinstance(c, dict)]
+    points = []
+    for c in checks:
+        if norm_key(c.get("query_type")) not in NON_BRAND:
+            continue
+        m = mention(c.get("mentioned"))
+        cited = bool(URL_RX.match(s(c.get("cited_url")).strip()))
+        if cited:
+            points.append(1.0)
+        elif m is not None:
+            points.append({"yes": 0.6, "partial": 0.3, "no": 0.0}[m])
+    hits = sum(1 for p in points if p > 0)
+    score = half_up(100 * sum(points) / len(points)) if len(points) >= MIN_VISIBILITY_CHECKS else None
+    return {"score": score, "hits": hits, "total": len(points)}
+
+
 def norm_prio(v) -> str:
     v = s(v).upper()
     return v if v in ("P1", "P2", "P3") else "P2"
@@ -153,26 +252,59 @@ def render_html(d: dict, L: dict) -> str:
             out.append(f'<span>{e(L[lab])}: {e(site[key])}</span>')
     out.append("</div></header>")
 
+    scores, readiness, _ = compute_scores(d)
+    vis = compute_visibility(d)
+    head = d.get("headline") if isinstance(d.get("headline"), dict) else {}
+    tiles = []
+    if readiness is not None:
+        tiles.append(("readiness", readiness, ""))
+    if readiness is not None or vis["total"]:
+        basis = (L["visibility_basis"].replace("{hits}", str(vis["hits"])).replace("{total}", str(vis["total"]))
+                 if vis["total"] else L["not_measured"])
+        tiles.append(("visibility", vis["score"], basis))
+    if tiles:
+        out.append('<div class="headline">')
+        for name, n, basis in tiles:
+            cls = score_class(n) if n is not None else "s-na"
+            num = str(n) if n is not None else "&mdash;"
+            out.append(f'<div class="card score big {cls}"><div class="row"><h3>{e(L[name])}</h3>'
+                       f'<span class="num">{num}</span></div>'
+                       f'<div class="bar"><span style="width:{n or 0}%"></span></div>'
+                       f'<p>{e(L[name + "_hint"])}</p>')
+            if basis:
+                out.append(f'<p class="basis">{e(basis)}</p>')
+            if head.get(name):
+                out.append(f'<p class="comment">{e(head[name])}</p>')
+            out.append("</div>")
+        out.append("</div>")
+
     if d.get("summary"):
         out.append(f'<h2>{e(L["summary"])}</h2><div class="card summary">')
         for para in s(d["summary"]).split("\n\n"):
             out.append(f"<p>{e(para)}</p>")
         out.append("</div>")
 
-    scores = [x for x in as_list(d.get("scores")) if isinstance(x, dict)]
     if scores:
         out.append(f'<h2>{e(L["scores"])}</h2><div class="scores">')
-        overall = clamp_score(d.get("overall_score"))
-        if overall is not None:
-            scores = [{"area": L["overall"], "score": overall, "comment": d.get("overall_comment", "")}] + scores
         for sc in scores:
-            n = clamp_score(sc.get("score"))
-            if n is None:
-                continue
+            if sc["key"] in VISIBILITY_KEYS:
+                continue  # shown as the "Real visibility" headline
+            n = sc["score"]
             out.append(f'<div class="card score {score_class(n)}"><div class="row"><h3>{e(sc.get("area"))}</h3>'
                        f'<span class="num">{n}</span></div>'
                        f'<div class="bar"><span style="width:{n}%"></span></div>'
-                       f'<p>{e(sc.get("comment"))}</p></div>')
+                       f'<p>{e(sc.get("comment"))}</p>')
+            if sc["deductions"]:
+                out.append(f'<details class="ded"><summary>{e(L["deductions"])}: '
+                           f'&minus;{sum(x["points"] for x in sc["deductions"])}</summary><ul>')
+                for x in sc["deductions"]:
+                    out.append(f'<li><span class="pts">&minus;{x["points"]}</span>'
+                               f'<span class="tag {x["severity"]}">{e(L["severity_" + x["severity"]])}</span>'
+                               f'{e(x["title"])}</li>')
+                out.append("</ul></details>")
+            else:
+                out.append(f'<p class="basis">{e(L["no_deductions"])}</p>')
+            out.append("</div>")
         out.append("</div>")
 
     strengths = [x for x in as_list(d.get("strengths")) if isinstance(x, dict)]
@@ -352,6 +484,13 @@ def render_md(d: dict, L: dict) -> str:
         lines.append(f'- {md_text(L["audit_date"])}: {md_text(site["audit_date"])}')
     if site.get("cms"):
         lines.append(f'- {md_text(L["platform"])}: {md_text(site["cms"])}')
+    _, readiness, _ = compute_scores(d)
+    vis = compute_visibility(d)
+    if readiness is not None:
+        lines.append(f'- {md_text(L["readiness"])}: {readiness}/100')
+    if readiness is not None or vis["total"]:
+        lines.append(f'- {md_text(L["visibility"])}: '
+                     + (f'{vis["score"]}/100' if vis["score"] is not None else md_text(L["not_measured"])))
     lines.append("")
     tasks = [x for x in as_list(d.get("tasks")) if isinstance(x, dict)]
     for wave, lab in WAVES:
@@ -392,6 +531,39 @@ def render_md(d: dict, L: dict) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
+# ----------------------------------------------------------------------------- CSV
+
+def csv_cell(value) -> str:
+    """Plain text that a spreadsheet will not evaluate as a formula (OWASP CSV injection)."""
+    text = s(value)
+    if text.lstrip(" ").startswith(CSV_FORMULA_START):
+        return "'" + text
+    return text
+
+
+def render_csv(d: dict, L: dict) -> str:
+    """tasks.csv for Jira/Trello/Asana/Sheets imports: one row per task."""
+    waves = {w: L[lab] for w, lab in WAVES}
+    order = {w: i for i, (w, _) in enumerate(WAVES)}
+    cols = ["ID", L["wave"], L["priority"], L["area"], L["task_title"], L["why"], L["steps"],
+            L["acceptance"], L["effort"], L["owner"], L["pages"]]
+    buf = io.StringIO()
+    w = csv.writer(buf, quoting=csv.QUOTE_ALL, lineterminator="\r\n")
+    w.writerow([csv_cell(c) for c in cols])
+    tasks = [x for x in as_list(d.get("tasks")) if isinstance(x, dict)]
+    tasks.sort(key=lambda t: (order.get(s(t.get("wave")).lower(), len(WAVES)), norm_prio(t.get("priority"))))
+    for t in tasks:
+        wave = s(t.get("wave")).lower()
+        row = [t.get("id"), waves.get(wave, wave), norm_prio(t.get("priority")), t.get("area"), t.get("title"),
+               t.get("why"),
+               "\n".join(f"{i}. {s(x)}" for i, x in enumerate(as_list(t.get("steps")), 1)),
+               "\n".join(f"\u2022 {s(x)}" for x in as_list(t.get("acceptance"))),
+               t.get("effort"), t.get("owner"),
+               "\n".join(s(p) for p in as_list(t.get("pages"))[:20])]
+        w.writerow([csv_cell(c) for c in row])
+    return buf.getvalue()
+
+
 # ----------------------------------------------------------------------------- main
 
 def main() -> int:
@@ -421,12 +593,21 @@ def main() -> int:
     os.makedirs(args.out_dir, exist_ok=True)
     html_path = os.path.join(args.out_dir, "report.html")
     md_path = os.path.join(args.out_dir, "tz.md")
+    csv_path = os.path.join(args.out_dir, "tasks.csv")
     with open(html_path, "w", encoding="utf-8") as fh:
         fh.write(page)
     with open(md_path, "w", encoding="utf-8") as fh:
         fh.write(render_md(d, L))
+    with open(csv_path, "w", encoding="utf-8-sig", newline="") as fh:  # BOM so Excel reads UTF-8
+        fh.write(render_csv(d, L))
+    for warning in compute_scores(d)[2]:
+        print(f"WARNING: {warning}", file=sys.stderr)
+    if compute_visibility(d)["score"] is None:
+        print(f"NOTE: real visibility not scored: fewer than {MIN_VISIBILITY_CHECKS} non-brand checks "
+              "with a result (set query_type on geo_visibility.checks)", file=sys.stderr)
     print(f"Wrote {html_path}")
     print(f"Wrote {md_path}")
+    print(f"Wrote {csv_path}")
     return 0
 
 

@@ -259,5 +259,92 @@ class PSITests(unittest.TestCase):
         self.assertEqual(psi.redact("err key=abc", "abc"), "err key=[REDACTED]")
 
 
+class CSVTests(unittest.TestCase):
+    def test_formula_cells_are_neutralised(self):
+        for bad in ("=HYPERLINK(\"http://evil.example\",\"x\")", "+1+cmd|' /C calc'!A0", "-2+3", "@SUM(A1)",
+                    "\t=1", " =1", "＝1"):
+            with self.subTest(bad=bad):
+                self.assertTrue(render_report.csv_cell(bad).startswith("'"))
+        self.assertEqual(render_report.csv_cell("Add JSON-LD"), "Add JSON-LD")
+
+    def test_tasks_csv(self):
+        d = {"tasks": [{"id": "T2", "wave": "30d", "priority": "P2", "title": "=cmd()", "steps": ["a", "b"]},
+                       {"id": "T1", "wave": "now", "priority": "P1", "title": "Fix", "acceptance": ["ok"]}]}
+        import csv
+        import io
+        rows = list(csv.reader(io.StringIO(render_report.render_csv(d, render_report.DEFAULT_LABELS))))
+        self.assertEqual([r[0] for r in rows[1:]], ["T1", "T2"])  # sorted by wave
+        self.assertEqual(rows[2][4], "'=cmd()")
+        self.assertEqual(rows[2][6], "1. a\n2. b")
+
+
+class ScoringTests(unittest.TestCase):
+    REPORT = {
+        "scores": [{"key": "technical", "area": "Technical SEO", "score": 50},
+                   {"key": "onpage", "area": "On-page"},
+                   {"key": "visibility", "area": "AI visibility"}],
+        "weaknesses": [{"title": "a", "severity": "critical", "area": "Technical SEO"},
+                       {"title": "b", "severity": "low", "area_key": "technical"},
+                       {"title": "c", "severity": "bogus", "area": "On-page"},
+                       {"title": "d", "severity": "high", "area_key": "visibility"}],
+        "geo_visibility": {"checks": [
+            {"query_type": "brand", "mentioned": True},
+            {"query_type": "non_brand", "mentioned": False},
+            {"query_type": "non_brand", "mentioned": True},
+            {"query_type": "non-brand", "mentioned": "no", "cited_url": "https://example.com/"},
+            {"query_type": "non_brand", "mentioned": "n/a"}]},
+    }
+
+    def test_area_scores_come_from_deductions(self):
+        scores, readiness, warnings = render_report.compute_scores(self.REPORT)
+        by_key = {x["key"]: x["score"] for x in scores}
+        self.assertEqual(by_key["technical"], 73)   # 100 - 25 - 2
+        self.assertEqual(by_key["onpage"], 94)      # unknown severity counts as medium
+        self.assertEqual(readiness, 81)             # (73*1.5 + 94) / 2.5 = 81.4
+        self.assertTrue(any("stated score 50" in w for w in warnings))
+
+    def test_visibility_uses_only_non_brand_checks(self):
+        vis = render_report.compute_visibility(self.REPORT)
+        self.assertEqual((vis["hits"], vis["total"]), (2, 3))
+        self.assertEqual(vis["score"], 53)          # (0 + 0.6 + 1) / 3
+
+    def test_too_few_checks_is_not_measured(self):
+        vis = render_report.compute_visibility({"geo_visibility": {"checks": [
+            {"query_type": "non_brand", "mentioned": False}]}})
+        self.assertIsNone(vis["score"])
+
+    def test_html_escapes_deduction_titles(self):
+        d = dict(self.REPORT, weaknesses=[{"title": "<script>x</script>", "severity": "high",
+                                           "area_key": "technical"}])
+        body, _ = render_report.render_html(d, render_report.DEFAULT_LABELS)
+        self.assertNotIn("<script>", body)
+
+
+class SanityFlagTests(unittest.TestCase):
+    @staticmethod
+    def pages(n, **kw):
+        base = {"title": "Home", "status": 200, "word_count": 500, "parse_error": None}
+        return [dict(base, url=f"https://example.com/{i}", **kw) for i in range(n)]
+
+    def codes(self, *args):
+        return {f["code"] for f in collect.sanity_flags(*args)}
+
+    def test_healthy_crawl_has_no_flags(self):
+        pages = [dict(p, title=f"Page {i}") for i, p in enumerate(self.pages(10))]
+        links = [{"status": 200}] * 10
+        self.assertEqual(self.codes(pages, links, [], 50, 25), set())
+
+    def test_collection_problems_are_flagged(self):
+        pages = self.pages(6, title="Just a moment...", word_count=10, status=403)
+        links = [{"status": 404}] * 6
+        failed = [{"url": "x", "error": "network_error"}] * 4
+        self.assertEqual(self.codes(pages, links, failed, 100, 25),
+                         {"bot_protection_suspected", "identical_titles", "mostly_empty_pages",
+                          "most_links_broken", "many_fetch_failures"})
+
+    def test_few_pages_reached(self):
+        self.assertIn("few_pages_reached", self.codes(self.pages(2), [], [], 300, 25))
+
+
 if __name__ == "__main__":
     unittest.main()
