@@ -13,6 +13,7 @@ import unittest
 SCRIPTS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "seo-geo-audit", "scripts")
 sys.path.insert(0, os.path.abspath(SCRIPTS))
 
+import benchmark  # noqa: E402
 import collect  # noqa: E402
 import netsafe  # noqa: E402
 import psi  # noqa: E402
@@ -344,6 +345,81 @@ class SanityFlagTests(unittest.TestCase):
 
     def test_few_pages_reached(self):
         self.assertIn("few_pages_reached", self.codes(self.pages(2), [], [], 300, 25))
+
+
+class EntityTests(unittest.TestCase):
+    HTML = (b"<html><head><title>Clinic</title>"
+            b"<meta property='og:site_name' content='Clinic LA'>"
+            b"<script type='application/ld+json'>{\"@type\":\"Dentist\",\"name\":\"Clinic LA\","
+            b"\"telephone\":\"+1 310-208-8273\",\"address\":{\"streetAddress\":\"1 Main St\","
+            b"\"addressLocality\":\"Los Angeles\"},\"sameAs\":[\"https://www.instagram.com/clinic\"]}</script>"
+            b"</head><body><div itemscope itemtype='https://schema.org/LocalBusiness'>"
+            b"<span itemprop='streetAddress'>1 Main St<br>Ste 3</span>"
+            b"<span itemprop='addressLocality'>Los Angeles</span>"
+            b"<a href='tel:(310) 208-8273'>call</a></div>"
+            b"<a href='https://www.facebook.com/clinic'>fb</a><a href='https://www.google.com/search?q=x'>g</a>"
+            b"<a href='https://maps.app.goo.gl/abc'>map</a></body></html>")
+
+    def test_nap_is_extracted_and_merged(self):
+        page, _ = collect.analyze_page("https://example.com/", HTMLParsingTests.page(self.HTML), "example.com")
+        ent = page["entity"]
+        self.assertIn({"prop": "streetAddress", "value": "1 Main St Ste 3"}, ent["microdata_nap"])
+        self.assertEqual(ent["profile_links"], ["https://maps.app.goo.gl/abc", "https://www.facebook.com/clinic"])
+        summary = collect.summarize_entity([page])
+        self.assertEqual(summary["names"][0]["value"], "Clinic LA")
+        self.assertEqual(len(summary["phones"]), 1)          # same number in two formats
+        self.assertEqual(summary["phones"][0]["pages"], 2)
+        sources = {a["source"] for a in summary["addresses"]}
+        self.assertEqual(sources, {"json-ld", "microdata"})
+
+    def test_unclosed_itemprop_is_bounded(self):
+        html = b"<html><body><span itemprop='telephone'>" + b"<b>x</b>" * 5000
+        (page, _), elapsed = timed(collect.analyze_page, "https://example.com/",
+                                   HTMLParsingTests.page(html), "example.com")
+        self.assertLess(elapsed, FAST)
+
+
+class BenchmarkTests(unittest.TestCase):
+    @staticmethod
+    def crawl(n_pages, **page_kw):
+        base = {"title": "T", "word_count": 100, "question_headings": 0, "headings": [], "canonical": [],
+                "ttfb_ms": 100, "html_bytes": 2048, "url": "https://a.example/",
+                "structured_data": {"json_ld": {"types": [], "nodes": []}, "microdata_types": []}}
+        pages = [dict(base, url=f"https://a.example/{i}", **page_kw) for i in range(n_pages)]
+        return {"pages": pages, "final_origin": "https://www.a.example",
+                "llms_txt": {"/llms.txt": {"status": 200, "looks_like_html": True}}}
+
+    def test_soft_404_llms_txt_is_absent(self):
+        self.assertFalse(benchmark.metrics(self.crawl(2), 2)["llms_txt"])
+
+    def test_totals_use_the_sample_presence_uses_all(self):
+        crawl = self.crawl(10, question_headings=1)
+        crawl["pages"][9]["headings"] = [{"level": 1, "text": "Braces prices"}]
+        m = benchmark.metrics(crawl, 3)
+        self.assertEqual(m["question_headings"], 3)
+        self.assertEqual(m["pages_analyzed"], 10)
+        self.assertEqual(m["price_pages"], ["https://a.example/9"])
+
+    def test_cost_question_is_not_a_price_page(self):
+        crawl = self.crawl(1)
+        crawl["pages"][0]["headings"] = [{"level": 2, "text": "How much does it cost?"}]
+        self.assertEqual(benchmark.metrics(crawl, 1)["price_pages"], [])
+
+
+class EntityRenderTests(unittest.TestCase):
+    def test_entity_and_benchmark_are_escaped(self):
+        evil = "<img src=x onerror=alert(1)>"
+        d = {"entity": {"site_nap": {"name": evil}, "listings": [{"source": evil, "url": "javascript:alert(1)",
+                                                                  "address": "mismatch", "note": evil}],
+                        "claims_gap": [{"claim": evil, "found_on": evil, "on_site": False}]},
+             "benchmark": {"pages_per_site": 3, "sites": [
+                 {"role": "client", "host": evil, "url": "https://a.example/",
+                  "metrics": {"schema_types": [evil], "price_pages": ["javascript:alert(1)"]}},
+                 {"role": "competitor", "host": "b.example", "url": "https://b.example/", "metrics": {}}]},
+             "benchmark_extra": {"b.example": {"maps_reviews": evil}}}
+        body, _ = render_report.render_html(d, render_report.DEFAULT_LABELS)
+        self.assertNotIn("<img", body)
+        self.assertNotIn('href="javascript', body)
 
 
 if __name__ == "__main__":

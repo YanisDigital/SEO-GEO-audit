@@ -56,6 +56,21 @@ that is what practitioners use.
        "competitors_named": ["A", "B"], "note": "..."}
     ]
   },
+  "entity": {
+    "summary": "2-3 sentences: is the business described consistently across the web?",
+    "site_nap": {"name": "...", "address": "...", "phone": "..."},
+    "listings": [
+      {"source": "Healthgrades", "url": "https://...", "name": "ok|mismatch|missing",
+       "address": "ok|mismatch|missing", "phone": "ok|mismatch|missing",
+       "rating": "4.8", "reviews": "37", "note": "..."}
+    ],
+    "claims_gap": [
+      {"claim": "...", "found_on": "US News", "url": "https://...", "on_site": false}
+    ]
+  },
+  "benchmark_extra": {
+    "competitor.com": {"maps_rating": 4.9, "maps_reviews": 310, "ai_mentions": 3}
+  },
   "competitors": [
     {"name": "...", "url": "https://...", "notes": "...", "better_at": ["..."], "worse_at": ["..."]}
   ],
@@ -80,6 +95,11 @@ computes them. **weaknesses**: set `area_key` to the area the issue deducts
 from (or use exactly the same `area` text as the score entry). Weaknesses
 about live AI/search visibility use `area_key: "visibility"`: they are listed
 but deduct nothing, because that score is measured directly.
+
+**entity**: see references/entity-directories.md. **benchmark**: don't write
+it; `scripts/benchmark.py` creates `benchmark.json` next to report.json and the
+renderer reads it. `benchmark_extra` adds per-host values the crawl can't see
+(`maps_rating`, `maps_reviews`, `ai_mentions`; include the client's host too).
 
 Omit sections you have no data for (for example, `competitors` when none were
 given). Never fill them with placeholders.

@@ -39,7 +39,7 @@ from netsafe import (ROBOTS_TOKEN, USER_AGENT, SafeFetcher, UnsafeURLError,  # n
                      decode_body, normalize_input_url, resolve_public, strip_url,
                      validate_url)
 
-VERSION = "0.2.0"
+VERSION = "0.3.0"
 HARD_MAX_PAGES = 200
 MAX_UNPARSED_TAIL = 8192
 HARD_MAX_LINK_CHECKS = 100
@@ -75,6 +75,17 @@ SKIP_EXT = re.compile(
     r"zip|rar|7z|gz|tar|exe|dmg|apk|msi|docx?|xlsx?|pptx?|csv|xml|json|txt|rss|atom|"
     r"css|js|woff2?|ttf|eot)$", re.I)
 TRACKING_PARAMS = re.compile(r"^(utm_[a-z]+|gclid|fbclid|yclid|msclkid|mc_[a-z]+|_ga|ref)$", re.I)
+NAP_ITEMPROPS = ("telephone", "streetAddress", "addressLocality", "addressRegion", "postalCode",
+                 "addressCountry")
+ORG_TYPE_HINTS = ("organization", "business", "dentist", "clinic", "physician", "store", "restaurant",
+                  "hotel", "attorney", "legalservice", "corporation", "medical", "agency", "contractor")
+# Profiles and listings a site links to (entity signals). Matched on the host suffix.
+PROFILE_HOSTS = ("facebook.com", "instagram.com", "linkedin.com", "youtube.com", "x.com", "twitter.com",
+                 "tiktok.com", "pinterest.com", "t.me", "wikipedia.org", "wikidata.org", "crunchbase.com",
+                 "yelp.com", "tripadvisor.com", "trustpilot.com", "bbb.org", "healthgrades.com", "zocdoc.com",
+                 "g2.com", "capterra.com", "clutch.co", "houzz.com", "angi.com", "avvo.com",
+                 "g.page", "maps.app.goo.gl", "goo.gl", "google.com", "doc.ua", "helsi.me", "prom.ua",
+                 "rozetka.com.ua", "hotline.ua", "olx.ua")
 SKIP_TEXT_TAGS = {"script", "style", "noscript", "template", "svg", "head", "iframe", "object"}
 VOID_TAGS = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta",
              "param", "source", "track", "wbr"}
@@ -171,6 +182,8 @@ class PageParser(HTMLParser):
         self.time_tags: list[str] = []
         self.root_ids: list[str] = []
         self.video_embeds = 0
+        self.itemprops: list[tuple[str, str]] = []
+        self._itemprop: list | None = None  # [prop, tag, depth, buffer]
 
     # -- helpers
     def _abs(self, href: str | None) -> str | None:
@@ -282,6 +295,16 @@ class PageParser(HTMLParser):
         elif tag == "time":
             if a.get("datetime") and len(self.time_tags) < 5:
                 self.time_tags.append(a["datetime"][:40])
+        if self._itemprop is not None:
+            self._itemprop[3].append(" ")  # <br> and nested tags separate words
+            if tag == self._itemprop[1] and tag not in VOID_TAGS:
+                self._itemprop[2] += 1
+        prop = a.get("itemprop", "")
+        if prop in NAP_ITEMPROPS and len(self.itemprops) < 40 and self._itemprop is None:
+            if a.get("content"):
+                self.itemprops.append((prop, clip(a["content"], 200) or ""))
+            elif tag not in VOID_TAGS:
+                self._itemprop = [prop, tag, 1, []]
         if "itemtype" in a and len(self.microdata_types) < 30:
             self.microdata_types.append(a["itemtype"][:120])
         if "typeof" in a:
@@ -299,6 +322,13 @@ class PageParser(HTMLParser):
             self.in_title = False
 
     def handle_endtag(self, tag):
+        if self._itemprop is not None and tag == self._itemprop[1]:
+            self._itemprop[2] -= 1
+            if self._itemprop[2] <= 0:
+                value = clip("".join(self._itemprop[3]), 200)
+                if value:
+                    self.itemprops.append((self._itemprop[0], value))
+                self._itemprop = None
         if tag in SKIP_TEXT_TAGS and tag not in VOID_TAGS:
             self.skip_depth = max(0, self.skip_depth - 1)
         if tag in ("svg", "math"):
@@ -334,11 +364,37 @@ class PageParser(HTMLParser):
             return
         if self.skip_depth:
             return
+        if self._itemprop is not None and len(self._itemprop[3]) < 50:
+            self._itemprop[3].append(data)
         if self._heading_level:
             self._heading_buf.append(data)
         if self._a_stack:
             self._a_stack[-1]["text"].append(data)
         self._add_text(data)
+
+
+def jsonld_address(value) -> str | None:
+    if isinstance(value, list) and value:
+        value = value[0]
+    if isinstance(value, str):
+        return clip(value, 200)
+    if isinstance(value, dict):
+        parts = [value.get(k) for k in ("streetAddress", "addressLocality", "addressRegion", "postalCode",
+                                        "addressCountry")]
+        parts = [clip(x, 80) for x in parts if isinstance(x, (str, int))]
+        return clip(", ".join(x for x in parts if x), 200) or None
+    return None
+
+
+def phone_key(raw: str) -> str:
+    """Comparable phone form: digits only, last 10 (drops country code and formatting)."""
+    digits = "".join(ch for ch in raw if ch.isdigit())
+    return digits[-10:]
+
+
+def is_profile_host(host: str) -> bool:
+    host = (host or "").lower()
+    return any(host == h or host.endswith("." + h) for h in PROFILE_HOSTS)
 
 
 def summarize_jsonld(raw_blocks: list[str]) -> dict:
@@ -369,6 +425,9 @@ def summarize_jsonld(raw_blocks: list[str]) -> dict:
                     info["has_author"] = True
                 if "address" in node:
                     info["has_address"] = True
+                    addr = jsonld_address(node["address"])
+                    if addr:
+                        info["address"] = addr
                 if "aggregateRating" in node:
                     info["has_rating"] = True
                 nodes.append(info)
@@ -434,6 +493,7 @@ def analyze_page(url: str, res: dict, base_host: str) -> tuple[dict, list[str]]:
 
     internal, external, nofollow, empty_anchor, js_links = [], set(), 0, 0, 0
     tel = mail = 0
+    tel_values, profiles = [], []
     for ln in p.links:
         href = ln["href"]
         raw = ln["raw"].lower()
@@ -442,6 +502,8 @@ def analyze_page(url: str, res: dict, base_host: str) -> tuple[dict, list[str]]:
             continue
         if raw.startswith("tel:"):
             tel += 1
+            if len(tel_values) < 10 and ln["href"]:
+                tel_values.append(clip(ln["href"][4:], 40))
             continue
         if raw.startswith("mailto:"):
             mail += 1
@@ -455,7 +517,11 @@ def analyze_page(url: str, res: dict, base_host: str) -> tuple[dict, list[str]]:
         if same_site(href, base_host):
             internal.append(clean_url(href))
         else:
-            external.add(urlsplit(href).hostname or "")
+            host = urlsplit(href).hostname or ""
+            external.add(host)
+            generic_google = host.endswith(("google.com", "goo.gl")) and "maps" not in href.lower()
+            if is_profile_host(host) and not generic_google and len(profiles) < 30:
+                profiles.append(clip(strip_url(href), 200))
 
     canon = [l["href"] for l in p.link_rels if l["rel"] == "canonical"]
     hreflang = [{"hreflang": clip(l["hreflang"], 20), "href": l["href"]} for l in p.link_rels
@@ -531,6 +597,11 @@ def analyze_page(url: str, res: dict, base_host: str) -> tuple[dict, list[str]]:
             "javascript_links": js_links,
             "tel_links": tel,
             "mailto_links": mail,
+        },
+        "entity": {
+            "telephones": sorted(set(tel_values)),
+            "microdata_nap": [{"prop": k, "value": v} for k, v in p.itemprops[:40]],
+            "profile_links": sorted(set(profiles)),
         },
         "structured_data": {
             "json_ld": summarize_jsonld(p.jsonld_raw),
@@ -750,6 +821,47 @@ def head_unreliable(res: dict) -> bool:
     if res.get("error"):
         return not res["error"].startswith("blocked:")
     return (res.get("status") or 0) >= 400
+
+
+def summarize_entity(real_pages: list) -> dict:
+    """Name, address and phone (NAP) as the site states them, for comparison with listings."""
+    names, phones, addresses, profiles, same_as = Counter(), {}, Counter(), Counter(), set()
+    for p in real_pages:
+        og = (p.get("open_graph") or {}).get("og:site_name")
+        if og:
+            names[og] += 1
+        ld = p.get("structured_data", {}).get("json_ld", {})
+        same_as.update(ld.get("same_as", []))
+        for node in ld.get("nodes", []):
+            is_org = any(h in t.lower() for t in node.get("type", []) for h in ORG_TYPE_HINTS)
+            if is_org and node.get("name"):
+                names[node["name"]] += 1
+            if node.get("telephone"):
+                phones.setdefault(phone_key(str(node["telephone"])), Counter())[str(node["telephone"])] += 1
+            if node.get("address"):
+                addresses[("json-ld", node["address"])] += 1
+        ent = p.get("entity") or {}
+        for tel in ent.get("telephones", []):
+            phones.setdefault(phone_key(tel), Counter())[tel] += 1
+        md = {}
+        for item in ent.get("microdata_nap", []):
+            md.setdefault(item["prop"], item["value"])
+            if item["prop"] == "telephone":
+                phones.setdefault(phone_key(item["value"]), Counter())[item["value"]] += 1
+        parts = [md.get(k) for k in NAP_ITEMPROPS[1:] if md.get(k)]
+        if parts:
+            addresses[("microdata", ", ".join(parts))] += 1
+        profiles.update(ent.get("profile_links", []))
+    phones.pop("", None)
+    phone_list = sorted(({"value": c.most_common(1)[0][0], "pages": sum(c.values())} for c in phones.values()),
+                        key=lambda x: -x["pages"])
+    return {
+        "names": [{"value": k, "pages": v} for k, v in names.most_common(5)],
+        "phones": phone_list[:10],
+        "addresses": [{"value": v, "source": src, "pages": n} for (src, v), n in addresses.most_common(10)],
+        "same_as": sorted(same_as)[:30],
+        "profile_links": [{"url": u, "pages": n} for u, n in profiles.most_common(30)],
+    }
 
 
 CHALLENGE_MARKERS = ("just a moment", "attention required", "access denied", "are you a robot",
@@ -1048,6 +1160,7 @@ def main() -> int:
         "password_field_on_http": any(p.get("password_field_on_http") for p in real_pages),
         "security_txt": sec,
     }
+    entity = summarize_entity(real_pages)
     third_party = Counter(h for p in real_pages for h in p.get("scripts", {}).get("third_party_hosts", []))
 
     report = {
@@ -1088,6 +1201,7 @@ def main() -> int:
             "structured_data_types": sorted({t for p in real_pages for t in p["structured_data"]["json_ld"]["types"]}),
             "images_missing_alt_total": sum(p["images"]["missing_alt"] for p in real_pages),
             "images_total": sum(p["images"]["count"] for p in real_pages),
+            "entity": entity,
             "third_party_script_hosts": [{"host": h, "pages": c} for h, c in third_party.most_common(30)],
             "avg_ttfb_ms": int(sum(p.get("ttfb_ms") or 0 for p in real_pages) / max(1, len(real_pages))),
             "max_html_bytes": max((p.get("html_bytes") or 0) for p in real_pages) if real_pages else 0,
@@ -1103,7 +1217,9 @@ def main() -> int:
     s = report["site_summary"]
     print(f"OK: {len(real_pages)} pages analysed, {fetcher.request_count} requests, {report['duration_s']}s")
     print(f"robots.txt: {robots_info.get('status')} | sitemap URLs: {s['sitemap_urls']} | "
-          f"llms.txt: {llm_files['/llms.txt'].get('status')} | https: {security['https_final']}")
+          f"llms.txt: {llm_files['/llms.txt'].get('status')}"
+          f"{' (HTML page, not a real llms.txt)' if llm_files['/llms.txt'].get('looks_like_html') else ''}"
+          f" | https: {security['https_final']}")
     for flag in report["sanity_flags"]:
         print(f"CHECK: {flag['code']}: {flag['detail']}")
     print(f"Wrote {args.out}")

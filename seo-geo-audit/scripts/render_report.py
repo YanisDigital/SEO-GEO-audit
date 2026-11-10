@@ -48,6 +48,45 @@ DEFAULT_LABELS = {
     "not_measured": "not measured",
     "deductions": "Deductions",
     "no_deductions": "No issues found in this area",
+    "entity": "Entity and listings",
+    "site_nap": "On the site",
+    "source": "Source",
+    "name": "Name",
+    "address": "Address",
+    "phone": "Phone",
+    "rating": "Rating",
+    "reviews": "Reviews",
+    "claims_gap": "Facts found elsewhere but not on the site",
+    "claim": "Fact",
+    "found_on": "Found on",
+    "on_site": "On the site",
+    "match_ok": "matches",
+    "match_mismatch": "differs",
+    "match_missing": "missing",
+    "benchmark": "Side-by-side comparison",
+    "metric": "Metric",
+    "bench_note": "Presence checks use every crawled page. Totals and averages use the first {n} pages of each site.",
+    "client": "client",
+    "none": "none",
+    "bm_pages_analyzed": "Pages analysed",
+    "bm_maps_rating": "Google Maps rating",
+    "bm_maps_reviews": "Google Maps reviews",
+    "bm_ai_mentions": "Named in AI answers (checks)",
+    "bm_org_schema": "Organization/LocalBusiness schema",
+    "bm_schema_types": "Schema types",
+    "bm_faq": "FAQ content",
+    "bm_price_pages": "Price page",
+    "bm_reviews_markup": "Rating/review markup",
+    "bm_home_words": "Homepage words",
+    "bm_avg_words": "Average words per page",
+    "bm_question_headings": "Question-style headings",
+    "bm_search_bots_blocked": "AI/search bots blocked",
+    "bm_llms_txt": "llms.txt",
+    "bm_canonical_pct": "Pages with canonical, %",
+    "bm_avg_ttfb_ms": "Average TTFB, ms",
+    "bm_home_html_kb": "Homepage HTML, KB",
+    "bm_profile_links": "Profile/sameAs links",
+    "bm_sanity_flags": "Data quality flags",
     "wave": "Wave",
     "priority": "Priority",
     "task_title": "Task",
@@ -96,6 +135,12 @@ AREA_WEIGHT = {"technical": 1.5, "geo": 1.5}
 VISIBILITY_KEYS = ("visibility", "ai_visibility")  # measured by live checks, not by deductions
 NON_BRAND = ("non_brand", "nonbrand", "generic")
 MIN_VISIBILITY_CHECKS = 3
+BENCH_METRICS = ("pages_analyzed", "maps_rating", "maps_reviews", "ai_mentions", "org_schema", "schema_types",
+                 "faq", "price_pages", "reviews_markup", "home_words", "avg_words", "question_headings",
+                 "search_bots_blocked", "llms_txt", "canonical_pct", "avg_ttfb_ms", "home_html_kb",
+                 "profile_links", "sanity_flags")
+BENCH_EXTRA = ("maps_rating", "maps_reviews", "ai_mentions")  # filled in by the agent via benchmark_extra
+MAX_BENCHMARK_BYTES = 4 * 1024 * 1024
 CSV_FORMULA_START = ("=", "+", "-", "@", "\t", "\r", "\uff1d", "\uff0b", "\uff0d", "\uff20")
 URL_RX = re.compile(r"^https?://[^\s<>\"'`\\]+$", re.I)
 LANG_RX = re.compile(r"^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})?$")
@@ -237,6 +282,60 @@ def yes_no(v, L) -> str:
 
 
 # ----------------------------------------------------------------------------- HTML
+
+def match_tag(v, L) -> str:
+    key = s(v).strip().lower()
+    if key in ("ok", "match", "matches", "true", "yes"):
+        return f'<span class="tag yes">{e(L["match_ok"])}</span>'
+    if key in ("mismatch", "differs", "different", "wrong", "false", "no"):
+        return f'<span class="tag no">{e(L["match_mismatch"])}</span>'
+    if key in ("missing", "none", "absent"):
+        return f'<span class="tag partial">{e(L["match_missing"])}</span>'
+    return e(v)
+
+
+def bench_cell(key: str, v, L) -> str:
+    if v is None or v == "":
+        return '<span class="muted">&mdash;</span>'
+    if isinstance(v, bool):
+        return yes_no(v, L)
+    if isinstance(v, list):
+        if not v:
+            return yes_no(False, L) if key == "price_pages" else f'<span class="muted">{e(L["none"])}</span>'
+        if key == "price_pages":
+            return "<br>".join(link(u) for u in v[:2])
+        return e(", ".join(s(x) for x in v[:15]))
+    return e(v)
+
+
+def render_benchmark(bench: dict, extra: dict, L: dict) -> str:
+    sites = [x for x in as_list(bench.get("sites")) if isinstance(x, dict)][:6]
+    if len(sites) < 2:
+        return ""
+    extra = extra if isinstance(extra, dict) else {}
+    cols = []
+    for site in sites:
+        m = dict(site.get("metrics") or {}) if isinstance(site.get("metrics"), dict) else {}
+        add = extra.get(s(site.get("host")))
+        if isinstance(add, dict):
+            m.update({k: add[k] for k in BENCH_EXTRA if k in add})
+        cols.append((site, m))
+    rows = [k for k in BENCH_METRICS if any(k in m for _, m in cols)]
+    out = [f'<h3 class="sub">{e(L["benchmark"])}</h3><div class="table-wrap"><table class="bench"><thead><tr>'
+           f'<th>{e(L["metric"])}</th>']
+    for site, _ in cols:
+        mark = f' <span class="tag">{e(L["client"])}</span>' if site.get("role") == "client" else ""
+        out.append(f'<th>{link(site.get("url"), site.get("host"))}{mark}</th>')
+    out.append("</tr></thead><tbody>")
+    for k in rows:
+        out.append(f'<tr><td>{e(L["bm_" + k])}</td>'
+                   + "".join(f'<td>{bench_cell(k, m.get(k), L)}</td>' for _, m in cols) + "</tr>")
+    out.append("</tbody></table></div>")
+    n = bench.get("pages_per_site")
+    if isinstance(n, int) and n > 0:
+        out.append(f'<p class="muted">{e(L["bench_note"].replace("{n}", str(n)))}</p>')
+    return "".join(out)
+
 
 def render_html(d: dict, L: dict) -> str:
     out = []
@@ -388,9 +487,45 @@ def render_html(d: dict, L: dict) -> str:
                            f'<td>{e(c.get("note"))}</td></tr>')
             out.append("</tbody></table></div>")
 
+    ent = d.get("entity") if isinstance(d.get("entity"), dict) else {}
+    listings = [x for x in as_list(ent.get("listings")) if isinstance(x, dict)]
+    claims = [x for x in as_list(ent.get("claims_gap")) if isinstance(x, dict)]
+    if ent.get("summary") or listings or claims:
+        out.append(f'<h2>{e(L["entity"])}</h2>')
+        if ent.get("summary"):
+            out.append(f'<div class="card"><p>{e(ent["summary"])}</p></div>')
+        nap = ent.get("site_nap") if isinstance(ent.get("site_nap"), dict) else {}
+        if listings or nap:
+            out.append('<div class="table-wrap" style="margin-top:12px"><table><thead><tr>'
+                       f'<th>{e(L["source"])}</th><th>{e(L["name"])}</th><th>{e(L["address"])}</th>'
+                       f'<th>{e(L["phone"])}</th><th>{e(L["rating"])}</th><th>{e(L["reviews"])}</th>'
+                       f'<th>{e(L["note"])}</th></tr></thead><tbody>')
+            if nap:
+                out.append(f'<tr class="nap"><td><strong>{e(L["site_nap"])}</strong></td><td>{e(nap.get("name"))}</td>'
+                           f'<td>{e(nap.get("address"))}</td><td>{e(nap.get("phone"))}</td>'
+                           f'<td></td><td></td><td></td></tr>')
+            for x in listings:
+                out.append(f'<tr><td>{link(x.get("url"), x.get("source"))}</td><td>{match_tag(x.get("name"), L)}</td>'
+                           f'<td>{match_tag(x.get("address"), L)}</td><td>{match_tag(x.get("phone"), L)}</td>'
+                           f'<td>{e(x.get("rating"))}</td><td>{e(x.get("reviews"))}</td><td>{e(x.get("note"))}</td></tr>')
+            out.append("</tbody></table></div>")
+        if claims:
+            out.append(f'<h3 class="sub">{e(L["claims_gap"])}</h3><div class="table-wrap"><table><thead><tr>'
+                       f'<th>{e(L["claim"])}</th><th>{e(L["found_on"])}</th><th>{e(L["on_site"])}</th>'
+                       '</tr></thead><tbody>')
+            for x in claims:
+                out.append(f'<tr><td>{e(x.get("claim"))}</td><td>{link(x.get("url"), x.get("found_on")) if x.get("url") else e(x.get("found_on"))}</td>'
+                           f'<td>{yes_no(x.get("on_site"), L)}</td></tr>')
+            out.append("</tbody></table></div>")
+
     comps = [x for x in as_list(d.get("competitors")) if isinstance(x, dict)]
+    bench_html = render_benchmark(d["benchmark"], d.get("benchmark_extra"), L) \
+        if isinstance(d.get("benchmark"), dict) else ""
+    if comps or bench_html:
+        out.append(f'<h2>{e(L["competitors"])}</h2>')
+        out.append(bench_html)
     if comps:
-        out.append(f'<h2>{e(L["competitors"])}</h2><div class="list">')
+        out.append('<div class="list" style="margin-top:12px">')
         for c in comps:
             out.append(f'<div class="card"><h3>{e(c.get("name"))} <span class="muted">{link(c.get("url"))}</span></h3>')
             if c.get("notes"):
@@ -577,6 +712,13 @@ def main() -> int:
     if not isinstance(d, dict):
         print("ERROR: report.json must contain a JSON object", file=sys.stderr)
         return 2
+    bench_path = os.path.join(os.path.dirname(os.path.abspath(args.data)), "benchmark.json")
+    if not isinstance(d.get("benchmark"), dict) and os.path.isfile(bench_path) \
+            and os.path.getsize(bench_path) <= MAX_BENCHMARK_BYTES:
+        with open(bench_path, encoding="utf-8") as fh:
+            bench = json.load(fh)
+        if isinstance(bench, dict):
+            d["benchmark"] = bench
     L = dict(DEFAULT_LABELS)
     for k, v in (d.get("labels") or {}).items():
         if k in L and isinstance(v, str) and v.strip():

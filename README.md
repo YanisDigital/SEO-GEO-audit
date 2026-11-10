@@ -2,7 +2,7 @@
 
 Give Claude a website URL and get:
 
-- **`report.html`** — a self-contained report: two headline scores (*Site readiness* and *Real visibility*, because a technically sound site can still be invisible in AI answers), scores by area with the deductions behind them, strengths, weaknesses with evidence, a snapshot of visibility in AI answers (Perplexity, Google AI Overviews, ChatGPT), optional competitor comparison.
+- **`report.html`** — a self-contained report: two headline scores (*Site readiness* and *Real visibility*, because a technically sound site can still be invisible in AI answers), scores by area with the deductions behind them, strengths, weaknesses with evidence, a snapshot of visibility in AI answers (Perplexity, Google AI Overviews, ChatGPT), an entity and listings check (is the name, address and phone consistent across maps and directories, which third-party credentials the site leaves out), and a side-by-side comparison with the competitors that answer engines name instead of the client.
 - **`tz.md`** — a developer-ready action plan: tasks grouped into *do now / next 30 days / strategic*, each with steps, a code or text example, and acceptance criteria. The same tasks are exported to **`tasks.csv`** for Jira, Trello, Asana or a spreadsheet.
 
 It covers classic SEO (indexability, canonicals, sitemaps, on-page, structured data, Core Web Vitals, mobile/JS rendering, hreflang, local) and **GEO/AEO** (AI crawler access in robots.txt, rendering for non-JS crawlers, answer-shaped content, entity signals, llms.txt, live answer-engine checks). It also checks passive trust and security hygiene (HTTPS, security headers, mixed content, disclosed versions).
@@ -37,7 +37,9 @@ Restrict the key in Google Cloud Console to the PageSpeed Insights API only.
 
 > Audit https://example.com — competitors: competitor-a.com, competitor-b.com, region Kyiv
 
-Outputs go to `./audits/<domain>-<date>/` (`crawl.json`, `psi.json`, `report.json`, `report.html`, `tz.md`, `tasks.csv`).
+Outputs go to `./audits/<domain>-<date>/` (`crawl.json`, `competitor-<n>.json`, `benchmark.json`, `psi.json`, `report.json`, `report.html`, `tz.md`, `tasks.csv`).
+
+Without a competitor list, the skill compares the client with the 2-3 businesses that the answer engines named most often in the live checks.
 
 ## Layout
 
@@ -48,11 +50,13 @@ seo-geo-audit/
     seo-checklist.md
     geo-aeo-checklist.md
     site-security.md
+    entity-directories.md     NAP and listings protocol, directories by business type
     report-spec.md            report.json schema, scoring, task format
   scripts/
     netsafe.py                hardened HTTP client (SSRF-safe, size/time caps)
     collect.py                passive crawler -> crawl.json
     psi.py                    PageSpeed Insights summary -> psi.json
+    benchmark.py              client vs competitor crawls -> benchmark.json (offline)
     render_report.py          report.json -> report.html + tz.md + tasks.csv
   assets/report-template.html
 tests/test_security.py        offline security and regression tests
