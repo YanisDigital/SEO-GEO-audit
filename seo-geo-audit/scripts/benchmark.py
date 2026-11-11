@@ -22,7 +22,8 @@ from urllib.parse import urlsplit
 
 MAX_INPUT_BYTES = 64 * 1024 * 1024
 ORG_TYPE_HINTS = ("organization", "business", "dentist", "clinic", "physician", "store", "restaurant",
-                  "hotel", "attorney", "legalservice", "corporation", "medical", "agency", "contractor")
+                  "hotel", "attorney", "legalservice", "corporation", "medicalclinic", "medicalbusiness",
+                  "medicalorganization", "orthodont", "agency", "contractor")
 PRICE_WORDS = ("price", "pricing", "cost", "fees", "tariff", "ціна", "ціни", "вартість", "тариф",
                "цена", "цены", "стоимость", "preis", "prix", "precio", "prezzi", "cennik")
 FAQ_WORDS = ("faq", "frequently asked", "questions", "питання", "запитання", "вопрос", "fragen")

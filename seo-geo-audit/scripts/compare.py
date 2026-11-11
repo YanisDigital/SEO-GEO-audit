@@ -4,7 +4,8 @@
 Usage:
     python -I compare.py <PREV>/report.json <OUT>/report.json --out <OUT>/changes.json
 
-If crawl.json sits next to each report.json, site metrics are compared too.
+If crawl.json sits next to each report.json (or is given with --prev-crawl /
+--crawl), site metrics are compared too.
 No network access: this only reads local files. The renderer picks up
 changes.json from the folder of the current report.json.
 """
@@ -35,8 +36,8 @@ def load(path: str) -> dict:
     return data
 
 
-def load_crawl(report_path: str) -> dict | None:
-    path = os.path.join(os.path.dirname(os.path.abspath(report_path)), "crawl.json")
+def load_crawl(report_path: str, explicit: str | None = None) -> dict | None:
+    path = explicit or os.path.join(os.path.dirname(os.path.abspath(report_path)), "crawl.json")
     try:
         return load(path) if os.path.isfile(path) else None
     except (OSError, ValueError):
@@ -137,6 +138,8 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Compare a re-audit with the previous audit")
     ap.add_argument("previous", help="previous report.json")
     ap.add_argument("current", help="current report.json")
+    ap.add_argument("--prev-crawl", help="previous crawl.json (default: next to the previous report.json)")
+    ap.add_argument("--crawl", help="current crawl.json (default: next to the current report.json)")
     ap.add_argument("--out", required=True)
     args = ap.parse_args()
     try:
@@ -154,7 +157,7 @@ def main() -> int:
         "weaknesses": weakness_changes(prev, cur),
         "checks": check_changes(prev, cur),
     }
-    pc, cc = load_crawl(args.previous), load_crawl(args.current)
+    pc, cc = load_crawl(args.previous, args.prev_crawl), load_crawl(args.current, args.crawl)
     if pc and cc:
         before, after = crawl_metrics(pc), crawl_metrics(cc)
         out["site_metrics"] = [{"metric": k, "before": before[k], "after": after[k]} for k in after]

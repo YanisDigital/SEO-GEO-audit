@@ -374,6 +374,13 @@ class EntityTests(unittest.TestCase):
         sources = {a["source"] for a in summary["addresses"]}
         self.assertEqual(sources, {"json-ld", "microdata"})
 
+    def test_procedure_names_are_not_business_names(self):
+        page = {"title": "x", "structured_data": {"json_ld": {"nodes": [
+            {"type": ["MedicalProcedure"], "name": "Clear Braces"},
+            {"type": ["Orthodontist"], "name": "Clinic LA"}], "same_as": []}}}
+        names = [n["value"] for n in collect.summarize_entity([page])["names"]]
+        self.assertEqual(names, ["Clinic LA"])
+
     def test_unclosed_itemprop_is_bounded(self):
         html = b"<html><body><span itemprop='telephone'>" + b"<b>x</b>" * 5000
         (page, _), elapsed = timed(collect.analyze_page, "https://example.com/",

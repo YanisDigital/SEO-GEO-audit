@@ -39,7 +39,7 @@ from netsafe import (ROBOTS_TOKEN, USER_AGENT, SafeFetcher, UnsafeURLError,  # n
                      decode_body, normalize_input_url, resolve_public, strip_url,
                      validate_url)
 
-VERSION = "0.4.0"
+VERSION = "0.4.1"
 HARD_MAX_PAGES = 200
 MAX_UNPARSED_TAIL = 8192
 HARD_MAX_LINK_CHECKS = 100
@@ -79,7 +79,8 @@ TRACKING_PARAMS = re.compile(r"^(utm_[a-z]+|gclid|fbclid|yclid|msclkid|mc_[a-z]+
 NAP_ITEMPROPS = ("telephone", "streetAddress", "addressLocality", "addressRegion", "postalCode",
                  "addressCountry")
 ORG_TYPE_HINTS = ("organization", "business", "dentist", "clinic", "physician", "store", "restaurant",
-                  "hotel", "attorney", "legalservice", "corporation", "medical", "agency", "contractor")
+                  "hotel", "attorney", "legalservice", "corporation", "medicalclinic", "medicalbusiness",
+                  "medicalorganization", "orthodont", "agency", "contractor")
 # Profiles and listings a site links to (entity signals). Matched on the host suffix.
 PROFILE_HOSTS = ("facebook.com", "instagram.com", "linkedin.com", "youtube.com", "x.com", "twitter.com",
                  "tiktok.com", "pinterest.com", "t.me", "wikipedia.org", "wikidata.org", "crunchbase.com",
