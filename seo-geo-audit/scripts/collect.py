@@ -39,7 +39,7 @@ from netsafe import (ROBOTS_TOKEN, USER_AGENT, SafeFetcher, UnsafeURLError,  # n
                      decode_body, normalize_input_url, resolve_public, strip_url,
                      validate_url)
 
-VERSION = "0.3.0"
+VERSION = "0.4.0"
 HARD_MAX_PAGES = 200
 MAX_UNPARSED_TAIL = 8192
 HARD_MAX_LINK_CHECKS = 100
@@ -47,6 +47,7 @@ MAX_SITEMAP_URLS = 5000
 MAX_SITEMAP_FILES = 5
 TXT_EXCERPT = 1500
 TEXT_EXCERPT = 1200
+MAX_UNCRAWLED = 2000
 
 AI_BOTS = OrderedDict([
     ("GPTBot", "OpenAI - model training"),
@@ -1210,6 +1211,10 @@ def main() -> int:
         "crawl_issues": {"blocked_by_robots": blocked_by_robots[:30], "non_html": non_html[:30],
                          "failed": failed[:30]},
         "link_check": link_results,
+        # known same-site URLs that were not fetched (sitemap + internal links); lets later steps
+        # tell "page doesn't exist" from "page wasn't crawled"
+        "uncrawled_urls": [u for u in OrderedDict.fromkeys(sitemap_urls + all_internal)
+                           if u not in fetched and same_site(u, base_host)][:MAX_UNCRAWLED],
         "pages": pages,
     }
     write_json(args.out, report)

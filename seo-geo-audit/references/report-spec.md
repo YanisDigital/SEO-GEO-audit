@@ -46,7 +46,8 @@ that is what practitioners use.
   ],
   "weaknesses": [
     {"title": "short", "detail": "impact in business terms", "evidence": "URL / field / value",
-     "severity": "critical|high|medium|low", "area_key": "technical", "area": "Technical SEO"}
+     "severity": "critical|high|medium|low", "area_key": "technical", "area": "Technical SEO",
+     "key": "no-canonical"}
   ],
   "geo_visibility": {
     "summary": "2-3 sentences on patterns",
@@ -71,6 +72,7 @@ that is what practitioners use.
   "benchmark_extra": {
     "competitor.com": {"maps_rating": 4.9, "maps_reviews": 310, "ai_mentions": 3}
   },
+  "gaps_summary": "one line on the content gaps (gaps.json is read by the renderer)",
   "competitors": [
     {"name": "...", "url": "https://...", "notes": "...", "better_at": ["..."], "worse_at": ["..."]}
   ],
@@ -96,9 +98,16 @@ from (or use exactly the same `area` text as the score entry). Weaknesses
 about live AI/search visibility use `area_key: "visibility"`: they are listed
 but deduct nothing, because that score is measured directly.
 
+**weaknesses[].key**: a short, stable slug for the issue (`no-canonical`,
+`duplicate-meta-description`, `old-address-on-listings`). In a re-audit, reuse
+the previous report's key for the same issue even if you word the title
+differently; `compare.py` matches issues by key (by similar titles only as a
+fallback).
+
 **entity**: see references/entity-directories.md. **benchmark**: don't write
 it; `scripts/benchmark.py` creates `benchmark.json` next to report.json and the
-renderer reads it. `benchmark_extra` adds per-host values the crawl can't see
+renderer reads it. The same goes for `changes.json` (compare.py) and
+`gaps.json` (gaps.py). `benchmark_extra` adds per-host values the crawl can't see
 (`maps_rating`, `maps_reviews`, `ai_mentions`; include the client's host too).
 
 Omit sections you have no data for (for example, `competitors` when none were

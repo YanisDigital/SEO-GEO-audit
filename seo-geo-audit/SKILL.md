@@ -64,6 +64,17 @@ and public. Just keep to the ground rules.
 
 Set `OUT=audits/<domain>-<YYYY-MM-DD>` (domain without `www.`).
 
+**Re-audit.** Look for earlier folders `audits/<domain>-*`. If one exists (take
+the latest one that has a report.json, other than `OUT`), this is a re-audit,
+and the report shows what changed since then:
+- run the same live-check queries on the same engines (copy them from its
+  `geo_visibility.checks`), plus any new ones you need;
+- give each weakness the same `key` it had before when it is the same issue
+  (report-spec.md), so it is tracked as still open instead of fixed + new;
+- after writing report.json, before rendering, run
+  `python -I <skill>/scripts/compare.py <PREV>/report.json <OUT>/report.json --out <OUT>/changes.json`.
+Start the summary with what improved and what got worse.
+
 Scripts live in this skill's `scripts/` directory (the base directory shown when
 the skill loads). Run them with `python -I` (isolated mode; use `python3` if
 `python` is missing). They need Python 3.9+ and nothing else.
@@ -76,7 +87,8 @@ Defaults: 25 pages, 30 extra link checks, 1 request/second. Use `--max-pages N`
 only if the user asks for a deeper crawl (hard cap 200). Takes 1-3 minutes.
 
 **Work in parallel.** Start the collector as a background command, and while it
-runs do steps 2 (PageSpeed), 4 (live AI checks) and the searches of step 5:
+runs do steps 2 (PageSpeed), 4 (live AI checks), the searches of step 5 and
+the keyword list of step 7:
 they query Google and the answer engines, not the audited site. Never run two collectors against the
 same site at once.
 
@@ -162,18 +174,45 @@ answers (more reviews, a price page, FAQ, schema, listings) and turn each
 reason into a task. Treat `sanity_flags` in a competitor's metrics as you
 would for the client: don't draw conclusions from a crawl that was blocked.
 
-### 7. Analyse
+### 7. Content gaps
+Find the questions people search for that no page on the site answers.
+1. Build a query list (30-300 queries) in the audience's language:
+   - if a keyword skill or tool is available (e.g. a Google Autocomplete
+     expander such as `semantic-core-expander`, or a keyword export the user
+     gives you), use it on 3-5 seed phrases (the main services or products +
+     location) and export to CSV;
+   - otherwise collect them yourself: the live-check queries, Google
+     autocomplete and "People also ask" for the seed phrases (read in the
+     browser), and the vertical's typical queries (`references/verticals.md`).
+2. Run:
+```bash
+python -I <skill>/scripts/gaps.py <OUT>/crawl.json --keywords <OUT>/keywords.csv --competitors <OUT>/competitor-1.json <OUT>/competitor-2.json --brand '<Brand>' --out <OUT>/gaps.json
+```
+   (`--competitors` alone works too: then it lists competitor headings the
+   site has no page for.) Matching is lexical. Review the missing and weak
+   lists before using them: drop noise (slogans, events), and check a few in a
+   browser or with a `site:` search, since a topic may live on a page the
+   crawl didn't reach (matches marked "URL only" were found by URL, not content).
+3. Turn real gaps into tasks: one task per cluster or page to create or
+   extend, naming the queries it should answer. Write a one-line comment in
+   `gaps_summary`. Never invent search volumes: popularity comes only from the
+   tool's export.
+
+### 8. Analyse
 Read the references when you reach each area:
 - `references/seo-checklist.md` — technical, on-page, content/E-E-A-T, schema, CWV, mobile, international/local, market notes, severity guide.
 - `references/geo-aeo-checklist.md` — AI bot access, machine readability, answer-shaped content, entity signals, llms.txt, live-check protocol.
 - `references/site-security.md` — passive security and trust signals and their scope.
 - `references/entity-directories.md` — entity, NAP and listings protocol.
+- `references/verticals.md` — profiles by business type: extra checks, schema, queries, severity shifts.
 
-Work out the business type (local service, e-commerce, SaaS, media, B2B) and
-judge findings against it. A thin contact page is fine, a thin service page is
-not.
+Work out the business type and pick its profile in `references/verticals.md`
+(local services, medical/dental, legal/financial, e-commerce, SaaS/B2B,
+hospitality, media). Apply its checks and severity shifts, and state the
+chosen profile in the assumptions. A thin contact page is fine, a thin service
+page is not.
 
-### 8. Verify before you report
+### 9. Verify before you report
 Every critical or high weakness needs a second, independent confirmation
 before it goes into the report: the page in a browser, view-source, a direct
 re-fetch, or a second tool. Crawlers get served consent pages, bot challenges
@@ -182,7 +221,7 @@ missed low one. If you cannot confirm it, lower the severity and say "likely",
 or move it to limitations. Do the same for anything that matches a
 `sanity_flags` entry.
 
-### 9. Write report.json and render
+### 10. Write report.json and render
 Follow `references/report-spec.md`: the schema, the reproducible scoring method,
 the writing rules (evidence required, no invented numbers), and the task format.
 Save it as `<OUT>/report.json`, then:
@@ -190,14 +229,15 @@ Save it as `<OUT>/report.json`, then:
 python -I <skill>/scripts/render_report.py <OUT>/report.json --out-dir <OUT>
 ```
 The renderer computes the area scores, "Site readiness" and "Real visibility"
-from your weaknesses and checks, and writes `report.html`, `tz.md` and
-`tasks.csv`. Read its `WARNING`/`NOTE` lines: a weakness that matches no area
+from your weaknesses and checks, adds `benchmark.json`, `changes.json` and
+`gaps.json` from the same folder when they exist, and writes `report.html`,
+`tz.md` and `tasks.csv`. Read its `WARNING`/`NOTE` lines: a weakness that matches no area
 deducts nothing, and a stated score that differs from the computed one is
 replaced.
 
-### 10. Reply in chat
+### 11. Reply in chat
 In the user's language, briefly:
-- both headline scores ("Site readiness" and "Real visibility") and a one-line verdict,
+- both headline scores ("Site readiness" and "Real visibility") and a one-line verdict; in a re-audit, the change since the last audit,
 - top 3 strengths, top 3-5 problems,
 - the "do now" tasks in one line each,
 - paths to `report.html`, `tz.md` and `tasks.csv`,

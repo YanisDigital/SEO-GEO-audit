@@ -15,6 +15,8 @@ sys.path.insert(0, os.path.abspath(SCRIPTS))
 
 import benchmark  # noqa: E402
 import collect  # noqa: E402
+import compare  # noqa: E402
+import gaps  # noqa: E402
 import netsafe  # noqa: E402
 import psi  # noqa: E402
 import render_report  # noqa: E402
@@ -420,6 +422,102 @@ class EntityRenderTests(unittest.TestCase):
         body, _ = render_report.render_html(d, render_report.DEFAULT_LABELS)
         self.assertNotIn("<img", body)
         self.assertNotIn('href="javascript', body)
+
+
+class CompareTests(unittest.TestCase):
+    PREV = {"site": {"audit_date": "2026-01-01"},
+            "scores": [{"key": "technical", "area": "Technical SEO"}],
+            "weaknesses": [{"key": "no-canonical", "title": "No canonical tags", "severity": "medium",
+                            "area_key": "technical"},
+                           {"title": "Sitemap missing from robots.txt", "severity": "low", "area_key": "technical"},
+                           {"title": "Old address on listings", "severity": "high", "area_key": "local"}],
+            "geo_visibility": {"checks": [{"engine": "Perplexity", "query": "best x", "mentioned": False}]}}
+    CUR = {"site": {"audit_date": "2026-02-01"},
+           "scores": [{"key": "technical", "area": "Технічне SEO"}],
+           "weaknesses": [{"key": "no-canonical", "title": "Canonical відсутній", "severity": "low",
+                           "area_key": "technical"},
+                          {"title": "Sitemap missing in robots.txt file", "severity": "low", "area_key": "technical"},
+                          {"title": "No HSTS header", "severity": "medium", "area_key": "trust"}],
+           "geo_visibility": {"checks": [{"engine": "perplexity", "query": "Best X ", "mentioned": True,
+                                          "cited_url": "https://example.com/"}]}}
+
+    def test_issues_are_tracked_by_key_then_title(self):
+        w = compare.weakness_changes(self.PREV, self.CUR)
+        self.assertEqual([x["title"] for x in w["fixed"]], ["Old address on listings"])
+        self.assertEqual([x["title"] for x in w["new"]], ["No HSTS header"])
+        self.assertEqual(len(w["still_open"]), 2)
+        self.assertEqual(w["still_open"][0]["severity_before"], "medium")
+
+    def test_areas_match_by_key_across_languages(self):
+        areas = compare.area_changes(self.PREV, self.CUR)
+        self.assertEqual(areas, [{"key": "technical", "area": "Технічне SEO", "before": 92, "after": 96}])
+
+    def test_checks_match_case_insensitively(self):
+        checks = compare.check_changes(self.PREV, self.CUR)
+        self.assertEqual((checks[0]["before"], checks[0]["after"]), ("no", "cited"))
+
+    def test_changes_section_is_escaped(self):
+        evil = "<script>alert(1)</script>"
+        ch = {"previous": {"audit_date": evil, "readiness": 50}, "current": {"readiness": 60},
+              "areas": [{"area": evil, "before": 1, "after": 2}],
+              "weaknesses": {"fixed": [{"title": evil}], "new": [], "still_open": []},
+              "checks": [{"engine": evil, "query": evil, "before": evil, "after": "cited"}],
+              "site_metrics": [{"metric": evil, "before": evil, "after": 1}]}
+        html_out = render_report.render_changes(ch, render_report.DEFAULT_LABELS)
+        self.assertNotIn("<script", html_out)
+
+
+class GapsTests(unittest.TestCase):
+    def write(self, name, text):
+        import tempfile
+        d = tempfile.mkdtemp()
+        path = os.path.join(d, name)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        return path
+
+    def test_keyword_files(self):
+        rows = gaps.read_keywords(self.write("k.csv", "Ключова фраза;Популярність;Кластер\n"
+                                                      "брекети ціна київ;70;Ціни\nбрекети ціна київ;70;Ціни\n"
+                                                      "елайнери;inf;\n"))
+        self.assertEqual(rows, [{"query": "брекети ціна київ", "popularity": 70, "cluster": "Ціни"},
+                                {"query": "елайнери"}])
+        self.assertEqual(gaps.read_keywords(self.write("k.txt", "a b\n\nc d\n")), [{"query": "a b"}, {"query": "c d"}])
+        with self.assertRaises(ValueError):
+            gaps.read_keywords(self.write("k.csv", "foo,bar\nx,y\n"))
+
+    def test_matching_uses_pages_and_uncrawled_urls(self):
+        crawl = {"pages": [{"title": "Braces for adults", "url": "https://a.example/adults",
+                            "headings": [{"level": 1, "text": "Adult braces"}], "text_excerpt": "Invisalign too"}],
+                 "uncrawled_urls": ["https://a.example/orthodontist-beverly-hills"]}
+        pages = gaps.page_index(crawl)
+        self.assertEqual(gaps.match(gaps.stems("braces for adults"), pages)["status"], "covered")
+        bh = gaps.match(gaps.stems("orthodontist beverly hills"), pages)
+        self.assertEqual((bh["status"], bh.get("url_only")), ("covered", True))
+        self.assertEqual(gaps.match(gaps.stems("invisalign cost"), pages)["status"], "weak")
+        self.assertEqual(gaps.match(gaps.stems("jaw surgery"), pages)["status"], "missing")
+
+    def test_competitor_topics_skip_one_site_boilerplate(self):
+        def site(host, heads):
+            return {"final_origin": f"https://{host}", "pages": [
+                {"title": "x", "url": f"https://{host}/{i}", "headings": [{"level": 2, "text": h}]}
+                for i, h in enumerate(heads)]}
+        client = site("c.example", ["Lingual braces guide", "Orthodontic treatment for kids"])
+        comp = site("b.example", ["Quick links menu", "Quick links menu", "Lingual braces candidates",
+                                  "Classic vintage car show"])
+        vocab = gaps.niche_vocab([client, comp])
+        topics = [t["topic"] for t in gaps.competitor_topics([comp], set(), vocab, set())]
+        self.assertEqual(topics, ["Lingual braces candidates"])
+
+    def test_gaps_section_is_escaped(self):
+        evil = "<img src=x onerror=alert(1)>"
+        g = {"queries_total": 1, "counts": {"missing": 1},
+             "clusters": [{"cluster": evil, "queries": 1, "missing": 1}],
+             "missing": [{"query": evil, "cluster": evil, "popularity": evil, "page": "javascript:alert(1)"}],
+             "competitor_topics_missing": [{"topic": evil, "source": evil, "url": "javascript:x"}]}
+        html_out = render_report.render_gaps(g, evil, render_report.DEFAULT_LABELS)
+        self.assertNotIn("<img", html_out)
+        self.assertNotIn('href="javascript', html_out)
 
 
 if __name__ == "__main__":

@@ -87,6 +87,46 @@ DEFAULT_LABELS = {
     "bm_home_html_kb": "Homepage HTML, KB",
     "bm_profile_links": "Profile/sameAs links",
     "bm_sanity_flags": "Data quality flags",
+    "changes": "Changes since the previous audit",
+    "since": "since",
+    "before": "Before",
+    "after": "Now",
+    "fixed": "Fixed",
+    "new_issues": "New issues",
+    "still_open": "Still open",
+    "check_state_cited": "cited",
+    "check_state_yes": "named",
+    "check_state_partial": "partly",
+    "check_state_no": "absent",
+    "check_state_na": "n/a",
+    "site_metrics": "Site metrics",
+    "cm_pages_analyzed": "Pages analysed",
+    "cm_pages_without_canonical": "Pages without canonical",
+    "cm_pages_missing_description": "Pages without meta description",
+    "cm_pages_with_duplicate_description": "Pages with a duplicate description",
+    "cm_pages_with_duplicate_title": "Pages with a duplicate title",
+    "cm_pages_without_h1": "Pages without H1",
+    "cm_structured_data_types": "JSON-LD types",
+    "cm_images_missing_alt": "Images without alt",
+    "cm_avg_ttfb_ms": "Average TTFB, ms",
+    "cm_llms_txt": "llms.txt",
+    "cm_sitemap_urls": "URLs in sitemap",
+    "cm_sanity_flags": "Data quality flags",
+    "gaps": "Content gaps",
+    "gaps_counts": "{covered} of {total} queries have a matching page, {weak} only partly, {missing} have none",
+    "cluster": "Cluster",
+    "queries": "Queries",
+    "covered": "covered",
+    "weak": "partly",
+    "missing": "missing",
+    "popularity": "Popularity",
+    "best_page": "Closest page",
+    "url_only": "URL only, not crawled",
+    "missing_queries": "Queries without a matching page",
+    "weak_queries": "Queries covered only partly",
+    "competitor_topics": "Competitor topics the site doesn't cover",
+    "topic": "Topic",
+    "gaps_note": "Lexical matching of word stems against titles, headings, URLs and text of the crawled pages: a list of leads to review, not a verdict.",
     "wave": "Wave",
     "priority": "Priority",
     "task_title": "Task",
@@ -140,7 +180,8 @@ BENCH_METRICS = ("pages_analyzed", "maps_rating", "maps_reviews", "ai_mentions",
                  "search_bots_blocked", "llms_txt", "canonical_pct", "avg_ttfb_ms", "home_html_kb",
                  "profile_links", "sanity_flags")
 BENCH_EXTRA = ("maps_rating", "maps_reviews", "ai_mentions")  # filled in by the agent via benchmark_extra
-MAX_BENCHMARK_BYTES = 4 * 1024 * 1024
+MAX_SIDECAR_BYTES = 8 * 1024 * 1024
+SIDECARS = (("benchmark", "benchmark.json"), ("changes", "changes.json"), ("gaps", "gaps.json"))
 CSV_FORMULA_START = ("=", "+", "-", "@", "\t", "\r", "\uff1d", "\uff0b", "\uff0d", "\uff20")
 URL_RX = re.compile(r"^https?://[^\s<>\"'`\\]+$", re.I)
 LANG_RX = re.compile(r"^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})?$")
@@ -308,6 +349,128 @@ def bench_cell(key: str, v, L) -> str:
     return e(v)
 
 
+def num_or_dash(v) -> str:
+    if v is None or v == "":
+        return '<span class="muted">&mdash;</span>'
+    if isinstance(v, bool):
+        return '<span class="tag yes">&#10003;</span>' if v else '<span class="tag no">&#10007;</span>'
+    return e(v)
+
+
+def delta_tag(before, after, higher_is_better=True) -> str:
+    if not isinstance(before, (int, float)) or not isinstance(after, (int, float)) \
+            or isinstance(before, bool) or isinstance(after, bool) or before == after:
+        return ""
+    diff = after - before
+    good = (diff > 0) == higher_is_better
+    sign = "+" if diff > 0 else "&minus;"
+    return f' <span class="tag {"yes" if good else "no"}">{sign}{e(abs(diff))}</span>'
+
+
+LOWER_IS_BETTER = {"pages_without_canonical", "pages_missing_description", "pages_with_duplicate_description",
+                   "pages_with_duplicate_title", "pages_without_h1", "images_missing_alt", "avg_ttfb_ms",
+                   "sanity_flags"}
+
+
+def render_changes(ch: dict, L: dict) -> str:
+    prev = ch.get("previous") if isinstance(ch.get("previous"), dict) else {}
+    out = [f'<h2>{e(L["changes"])}{" (" + e(prev.get("audit_date")) + ")" if prev.get("audit_date") else ""}</h2>']
+    areas = [a for a in as_list(ch.get("areas")) if isinstance(a, dict)]
+    cur = ch.get("current") if isinstance(ch.get("current"), dict) else {}
+    rows = [(L["readiness"], prev.get("readiness"), cur.get("readiness")),
+            (L["visibility"], prev.get("visibility"), cur.get("visibility"))]
+    rows += [(a.get("area"), a.get("before"), a.get("after")) for a in areas]
+    out.append(f'<div class="table-wrap"><table><thead><tr><th>{e(L["area"])}</th><th>{e(L["before"])}</th>'
+               f'<th>{e(L["after"])}</th></tr></thead><tbody>')
+    for name, b, a in rows:
+        out.append(f'<tr><td>{e(name)}</td><td>{num_or_dash(b)}</td><td>{num_or_dash(a)}{delta_tag(b, a)}</td></tr>')
+    out.append("</tbody></table></div>")
+    w = ch.get("weaknesses") if isinstance(ch.get("weaknesses"), dict) else {}
+    out.append('<div class="changes">')
+    for key, label, cls in (("fixed", "fixed", "good"), ("new", "new_issues", "sev-high"),
+                            ("still_open", "still_open", "")):
+        items = [x for x in as_list(w.get(key)) if isinstance(x, dict)]
+        out.append(f'<div class="card item {cls}"><h3>{e(L[label])}: {len(items)}</h3><ul>')
+        for x in items[:30]:
+            sev = norm_sev(x.get("severity"))
+            out.append(f'<li><span class="tag {sev}">{e(L["severity_" + sev])}</span>{e(x.get("title"))}</li>')
+        out.append("</ul></div>")
+    out.append("</div>")
+    checks = [c for c in as_list(ch.get("checks")) if isinstance(c, dict)]
+    if checks:
+        def st(v):
+            key = {"cited": "cited", "yes": "yes", "partial": "partial", "no": "no"}.get(s(v), "na")
+            return e(L["check_state_" + key]) if v is not None else '<span class="muted">&mdash;</span>'
+        out.append(f'<h3 class="sub">{e(L["geo"])}</h3><div class="table-wrap"><table><thead><tr>'
+                   f'<th>{e(L["engine"])}</th><th>{e(L["query"])}</th><th>{e(L["before"])}</th>'
+                   f'<th>{e(L["after"])}</th></tr></thead><tbody>')
+        for c in checks[:40]:
+            out.append(f'<tr><td>{e(c.get("engine"))}</td><td>{e(c.get("query"))}</td>'
+                       f'<td>{st(c.get("before"))}</td><td>{st(c.get("after"))}</td></tr>')
+        out.append("</tbody></table></div>")
+    metrics = [m for m in as_list(ch.get("site_metrics")) if isinstance(m, dict) and s(m.get("metric"))]
+    if metrics:
+        out.append(f'<h3 class="sub">{e(L["site_metrics"])}</h3><div class="table-wrap"><table><thead><tr>'
+                   f'<th>{e(L["metric"])}</th><th>{e(L["before"])}</th><th>{e(L["after"])}</th></tr></thead><tbody>')
+        for m in metrics:
+            key = s(m.get("metric"))
+            label = L.get("cm_" + key, key)
+            b, a = m.get("before"), m.get("after")
+            out.append(f'<tr><td>{e(label)}</td><td>{num_or_dash(b)}</td>'
+                       f'<td>{num_or_dash(a)}{delta_tag(b, a, key not in LOWER_IS_BETTER)}</td></tr>')
+        out.append("</tbody></table></div>")
+    return "".join(out)
+
+
+def render_gaps(g: dict, comment, L: dict) -> str:
+    counts = g.get("counts") if isinstance(g.get("counts"), dict) else {}
+    total = g.get("queries_total") or 0
+    topics = [x for x in as_list(g.get("competitor_topics_missing")) if isinstance(x, dict)]
+    if not total and not topics:
+        return ""
+    out = [f'<h2>{e(L["gaps"])}</h2><div class="card">']
+    if comment:
+        out.append(f"<p>{e(comment)}</p>")
+    if total:
+        line = L["gaps_counts"]
+        for k, v in (("covered", counts.get("covered", 0)), ("weak", counts.get("weak", 0)),
+                     ("missing", counts.get("missing", 0)), ("total", total)):
+            line = line.replace("{" + k + "}", str(int(v) if isinstance(v, (int, float)) else 0))
+        out.append(f'<p class="basis">{e(line)}</p>')
+    out.append(f'<p class="muted">{e(L["gaps_note"])}</p></div>')
+    clusters = [c for c in as_list(g.get("clusters")) if isinstance(c, dict)]
+    if clusters:
+        out.append(f'<div class="table-wrap" style="margin-top:12px"><table><thead><tr><th>{e(L["cluster"])}</th>'
+                   f'<th>{e(L["queries"])}</th><th>{e(L["covered"])}</th><th>{e(L["weak"])}</th>'
+                   f'<th>{e(L["missing"])}</th></tr></thead><tbody>')
+        for c in clusters[:25]:
+            out.append(f'<tr><td>{e(c.get("cluster"))}</td><td>{num_or_dash(c.get("queries"))}</td>'
+                       f'<td>{num_or_dash(c.get("covered"))}</td><td>{num_or_dash(c.get("weak"))}</td>'
+                       f'<td>{num_or_dash(c.get("missing"))}</td></tr>')
+        out.append("</tbody></table></div>")
+    for key, label in (("missing", "missing_queries"), ("weak", "weak_queries")):
+        rows = [q for q in as_list(g.get(key)) if isinstance(q, dict)]
+        if not rows:
+            continue
+        out.append(f'<h3 class="sub">{e(L[label])}</h3><div class="table-wrap"><table><thead><tr>'
+                   f'<th>{e(L["query"])}</th><th>{e(L["cluster"])}</th><th>{e(L["popularity"])}</th>'
+                   f'<th>{e(L["best_page"])}</th></tr></thead><tbody>')
+        for q in rows[:30]:
+            page = link(q.get("page")) if q.get("page") else '<span class="muted">&mdash;</span>'
+            if q.get("url_only"):
+                page += f' <span class="tag">{e(L["url_only"])}</span>'
+            out.append(f'<tr><td>{e(q.get("query"))}</td><td>{e(q.get("cluster"))}</td>'
+                       f'<td>{num_or_dash(q.get("popularity"))}</td><td>{page}</td></tr>')
+        out.append("</tbody></table></div>")
+    if topics:
+        out.append(f'<h3 class="sub">{e(L["competitor_topics"])}</h3><div class="table-wrap"><table><thead><tr>'
+                   f'<th>{e(L["topic"])}</th><th>{e(L["source"])}</th></tr></thead><tbody>')
+        for x in topics[:30]:
+            out.append(f'<tr><td>{e(x.get("topic"))}</td><td>{link(x.get("url"), x.get("source"))}</td></tr>')
+        out.append("</tbody></table></div>")
+    return "".join(out)
+
+
 def render_benchmark(bench: dict, extra: dict, L: dict) -> str:
     sites = [x for x in as_list(bench.get("sites")) if isinstance(x, dict)][:6]
     if len(sites) < 2:
@@ -361,6 +524,8 @@ def render_html(d: dict, L: dict) -> str:
         basis = (L["visibility_basis"].replace("{hits}", str(vis["hits"])).replace("{total}", str(vis["total"]))
                  if vis["total"] else L["not_measured"])
         tiles.append(("visibility", vis["score"], basis))
+    ch = d.get("changes") if isinstance(d.get("changes"), dict) else {}
+    prev = ch.get("previous") if isinstance(ch.get("previous"), dict) else {}
     if tiles:
         out.append('<div class="headline">')
         for name, n, basis in tiles:
@@ -372,10 +537,16 @@ def render_html(d: dict, L: dict) -> str:
                        f'<p>{e(L[name + "_hint"])}</p>')
             if basis:
                 out.append(f'<p class="basis">{e(basis)}</p>')
+            delta = delta_tag(prev.get(name), n)
+            if delta:
+                out.append(f'<p class="basis">{delta} {e(L["since"])} {e(prev.get("audit_date"))}</p>')
             if head.get(name):
                 out.append(f'<p class="comment">{e(head[name])}</p>')
             out.append("</div>")
         out.append("</div>")
+
+    if ch:
+        out.append(render_changes(ch, L))
 
     if d.get("summary"):
         out.append(f'<h2>{e(L["summary"])}</h2><div class="card summary">')
@@ -536,6 +707,9 @@ def render_html(d: dict, L: dict) -> str:
                     out.append(f'<p><strong>{e(L[key])}:</strong></p><ul>' + "".join(f"<li>{e(v)}</li>" for v in vals) + "</ul>")
             out.append("</div>")
         out.append("</div>")
+
+    if isinstance(d.get("gaps"), dict):
+        out.append(render_gaps(d["gaps"], d.get("gaps_summary"), L))
 
     for key in ("limitations", "data_sources"):
         vals = as_list(d.get(key))
@@ -712,13 +886,15 @@ def main() -> int:
     if not isinstance(d, dict):
         print("ERROR: report.json must contain a JSON object", file=sys.stderr)
         return 2
-    bench_path = os.path.join(os.path.dirname(os.path.abspath(args.data)), "benchmark.json")
-    if not isinstance(d.get("benchmark"), dict) and os.path.isfile(bench_path) \
-            and os.path.getsize(bench_path) <= MAX_BENCHMARK_BYTES:
-        with open(bench_path, encoding="utf-8") as fh:
-            bench = json.load(fh)
-        if isinstance(bench, dict):
-            d["benchmark"] = bench
+    # benchmark.py, compare.py and gaps.py write their results next to report.json
+    for key, name in SIDECARS:
+        path = os.path.join(os.path.dirname(os.path.abspath(args.data)), name)
+        if isinstance(d.get(key), dict) or not os.path.isfile(path) or os.path.getsize(path) > MAX_SIDECAR_BYTES:
+            continue
+        with open(path, encoding="utf-8") as fh:
+            side = json.load(fh)
+        if isinstance(side, dict):
+            d[key] = side
     L = dict(DEFAULT_LABELS)
     for k, v in (d.get("labels") or {}).items():
         if k in L and isinstance(v, str) and v.strip():
