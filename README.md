@@ -20,6 +20,8 @@ cp -r SEO-GEO-audit/seo-geo-audit ~/.claude/skills/
 
 Or copy the `seo-geo-audit/` folder into a project's `.claude/skills/`. The skill also works in other Agent Skills–compatible clients that can run Python.
 
+Claude apps (claude.ai, desktop): download `seo-geo-audit-skill-vX.Y.Z.zip` from the [latest release](https://github.com/YanisDigital/SEO-GEO-audit/releases/latest) and upload it in Settings → Capabilities → Skills. Use the `-skill-` zip: the other one is the whole repository, and the upload rejects it because `SKILL.md` is not at its top level. Without a browser tool there, the live AI-answer checks, the listings check and the PageSpeed fallback are skipped, and the crawler needs network access in the code sandbox.
+
 **Requirements:** Python 3.9+ (standard library only, no `pip install`; a current patch release is recommended, see [SECURITY.md](SECURITY.md)). A browser tool (Claude's built-in browser, Claude in Chrome, or a Playwright MCP) is optional. It enables the rendered-page check and the live AI-answer checks.
 
 **Recommended:** a free [PageSpeed Insights API key](https://developers.google.com/speed/docs/insights/v5/get-started) in the `PSI_API_KEY` environment variable. The anonymous API quota is shared and usually exhausted (HTTP 429). Without a key the skill falls back to reading pagespeed.web.dev in the browser, or marks Core Web Vitals as unverified.
