@@ -35,14 +35,21 @@ from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
 from urllib.robotparser import RobotFileParser
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import extras  # noqa: E402
 from netsafe import (ROBOTS_TOKEN, USER_AGENT, SafeFetcher, UnsafeURLError,  # noqa: E402
                      decode_body, normalize_input_url, resolve_public, strip_url,
                      validate_url)
 
-VERSION = "0.4.1"
+VERSION = "0.5.0"
 HARD_MAX_PAGES = 200
 MAX_UNPARSED_TAIL = 8192
-HARD_MAX_LINK_CHECKS = 100
+HARD_MAX_LINK_CHECKS = 300
+HARD_MAX_ASSET_CHECKS = 100
+HARD_MAX_EXTERNAL_CHECKS = 50
+HARD_MAX_HREFLANG_FETCHES = 30
+MAX_INLINE_SCRIPTS = 40
+MAX_INLINE_SCRIPT_CHARS = 6000
+MAX_FORM_FIELDS = 30
 MAX_SITEMAP_URLS = 5000
 MAX_SITEMAP_FILES = 5
 TXT_EXCERPT = 1500
@@ -88,6 +95,20 @@ PROFILE_HOSTS = ("facebook.com", "instagram.com", "linkedin.com", "youtube.com",
                  "g2.com", "capterra.com", "clutch.co", "houzz.com", "angi.com", "avvo.com",
                  "g.page", "maps.app.goo.gl", "goo.gl", "google.com", "doc.ua", "helsi.me", "prom.ua",
                  "rozetka.com.ua", "hotline.ua", "olx.ua")
+CAPTCHA_CLASSES = (("g-recaptcha", "reCAPTCHA"), ("h-captcha", "hCaptcha"), ("cf-turnstile", "Cloudflare Turnstile"),
+                   ("frc-captcha", "Friendly Captcha"), ("altcha", "ALTCHA"))
+HONEYPOT_RX = re.compile(r"honey|(?:^|[_-])hp(?:[_-]|$)|do[_-]?not[_-]?fill|leave[_-]?blank|trap")
+CSRF_RX = re.compile(r"csrf|xsrf|_token|nonce|authenticity")
+CONSENT_RX = re.compile(r"consent|agree|privacy|gdpr|terms|policy|accept")
+HIDDEN_STYLE = ("display:none", "visibility:hidden", "left:-", "opacity:0", "height:0", "width:0")
+TEXTY_TYPES = ("text", "email", "tel", "search", "url", "number", "password")
+CONTACT_HOSTS = {"wa.me": "whatsapp", "api.whatsapp.com": "whatsapp", "web.whatsapp.com": "whatsapp",
+                 "t.me": "telegram", "telegram.me": "telegram", "telegram.dog": "telegram",
+                 "m.me": "messenger", "messenger.com": "messenger", "viber.com": "viber",
+                 "invite.viber.com": "viber", "signal.me": "signal"}
+CONTACT_SCHEME_KIND = {"viber": "viber", "whatsapp": "whatsapp", "tg": "telegram", "sms": "sms",
+                       "skype": "skype", "fb-messenger": "messenger"}
+CONTACT_SCHEMES = tuple(k + ":" for k in CONTACT_SCHEME_KIND)
 SKIP_TEXT_TAGS = {"script", "style", "noscript", "template", "svg", "head", "iframe", "object"}
 VOID_TAGS = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta",
              "param", "source", "track", "wbr"}
@@ -184,6 +205,13 @@ class PageParser(HTMLParser):
         self.time_tags: list[str] = []
         self.root_ids: list[str] = []
         self.video_embeds = 0
+        self.inline_scripts: list[str] = []
+        self._inline_buf: list[str] | None = None
+        self._inline_chars = 0
+        self._form: dict | None = None
+        self.orphan_fields = 0
+        self.srcset_images = 0
+        self.modern_sources = 0
         self.itemprops: list[tuple[str, str]] = []
         self._itemprop: list | None = None  # [prop, tag, depth, buffer]
 
@@ -207,9 +235,58 @@ class PageParser(HTMLParser):
         if self.main_depth:
             self.main_parts.append(data)
 
+    def _field(self, tag, a):
+        ftype = (a.get("type") or ("text" if tag == "input" else tag)).lower()
+        if tag == "input" and ftype == "password":
+            self.password_inputs += 1
+        form = self._form
+        if form is None:
+            if tag in ("textarea", "input") and (tag == "textarea" or ftype in TEXTY_TYPES):
+                self.orphan_fields += 1
+            return
+        if tag == "button":
+            if (a.get("type") or "submit").lower() == "submit":
+                form["has_submit"] = True
+            return
+        if tag == "input" and ftype in ("submit", "image"):
+            form["has_submit"] = True
+            return
+        if tag == "input" and ftype in ("button", "reset"):
+            return
+        name = clip(a.get("name") or a.get("id"), 40) or ""
+        if ftype == "hidden":
+            form["hidden"] += 1
+            if CSRF_RX.search(name.lower()):
+                form["csrf"] = True
+            return
+        if len(form["fields"]) >= MAX_FORM_FIELDS:
+            return
+        style = (a.get("style") or "").lower().replace(" ", "")
+        hidden_style = any(x in style for x in HIDDEN_STYLE) or "hidden" in a or a.get("aria-hidden") == "true"
+        honeypot = bool(HONEYPOT_RX.search((name + " " + (a.get("class") or "")).lower())) \
+            or (hidden_style and ftype in TEXTY_TYPES + ("textarea",)) \
+            or (a.get("tabindex") == "-1" and hidden_style)
+        if honeypot:
+            form["honeypot"] = True
+        form["fields"].append({
+            "tag": tag, "type": ftype, "name": name,
+            "required": "required" in a or a.get("aria-required") == "true",
+            "autocomplete": clip(a.get("autocomplete"), 20) or None,
+            "consent": ftype == "checkbox" and bool(CONSENT_RX.search(name.lower())),
+            "honeypot": honeypot})
+
     # -- parser callbacks
     def handle_starttag(self, tag, attrs):
         a = {k.lower(): (v if v is not None else "") for k, v in attrs}
+        if self._form is not None and self._form["captcha"] is None:
+            cls = (a.get("class") or "").lower()
+            for token, name in CAPTCHA_CLASSES:
+                if token in cls:
+                    self._form["captcha"] = name
+                    break
+            else:
+                if "data-sitekey" in a:
+                    self._form["captcha"] = "captcha (unknown)"
         if tag in SKIP_TEXT_TAGS and tag not in VOID_TAGS:
             self.skip_depth += 1
         if tag in ("svg", "math"):
@@ -252,6 +329,10 @@ class PageParser(HTMLParser):
                     self.resources.append(("script", src))
             else:
                 self.scripts_inline += 1
+                if stype in ("", "text/javascript", "application/javascript", "module") \
+                        and len(self.inline_scripts) < MAX_INLINE_SCRIPTS:
+                    self._inline_buf = []
+                    self._inline_chars = 0
         elif tag in ("h1", "h2", "h3", "h4", "h5", "h6"):
             self._heading_level = int(tag[1])
             self._heading_buf = []
@@ -271,23 +352,36 @@ class PageParser(HTMLParser):
                 self._a_stack[-1]["text"].append(a.get("alt") or "")
             if src:
                 self.resources.append(("img", src))
+            if a.get("srcset") or a.get("data-srcset"):
+                self.srcset_images += 1
         elif tag in ("source", "video", "audio", "embed"):
             src = self._abs(a.get("src"))
             if src:
                 self.resources.append((tag, src))
+            if tag == "source" and a.get("srcset") and re.search(
+                    r"image/(?:webp|avif)|\.(?:webp|avif)(?:\s|,|$|\?)", ((a.get("type") or "") + " " + a["srcset"][:300]).lower()):
+                self.modern_sources += 1
         elif tag == "iframe":
             src = self._abs(a.get("src"))
             if src:
                 self.iframes.append(src)
                 self.resources.append(("iframe", src))
+                if self._form is not None and self._form["captcha"] is None:
+                    low = src.lower()
+                    for name, rx in extras.ANTISPAM_RULES:
+                        if rx.search(low):
+                            self._form["captcha"] = name
+                            break
                 if re.search(r"youtube\.com|youtube-nocookie\.com|vimeo\.com", src):
                     self.video_embeds += 1
         elif tag == "form":
-            self.forms.append({"action": self._abs(a.get("action")) or self.base_url,
-                               "method": (a.get("method") or "get").lower()})
-        elif tag == "input":
-            if (a.get("type") or "").lower() == "password":
-                self.password_inputs += 1
+            self._form = {"action": self._abs(a.get("action")) or self.base_url,
+                          "method": (a.get("method") or "get").lower(), "fields": [], "captcha": None,
+                          "honeypot": False, "novalidate": "novalidate" in a, "has_submit": False,
+                          "csrf": False, "hidden": 0, "id": clip(a.get("id"), 40) or None}
+            self.forms.append(self._form)
+        elif tag in ("input", "textarea", "select", "button"):
+            self._field(tag, a)
         elif tag in ("ul", "ol", "dl"):
             self.lists += 1
         elif tag == "table":
@@ -339,9 +433,14 @@ class PageParser(HTMLParser):
             if self.in_title:
                 self._title_done = True
             self.in_title = False
+        elif tag == "form":
+            self._form = None
         elif tag == "script":
             if self._in_jsonld:
                 self.jsonld_raw.append("".join(self._jsonld_buf)[:200_000])
+            if self._inline_buf is not None:
+                self.inline_scripts.append("".join(self._inline_buf))
+                self._inline_buf = None
             self._in_jsonld = False
             self._in_script = False
         elif tag in ("h1", "h2", "h3", "h4", "h5", "h6") and self._heading_level:
@@ -360,6 +459,9 @@ class PageParser(HTMLParser):
             return
         if self._in_script:
             self.inline_script_bytes += len(data)
+            if self._inline_buf is not None and self._inline_chars < MAX_INLINE_SCRIPT_CHARS:
+                self._inline_buf.append(data[:MAX_INLINE_SCRIPT_CHARS - self._inline_chars])
+                self._inline_chars += len(data)
             return
         if self.in_title:
             self.title_parts.append(data)
@@ -469,6 +571,29 @@ def detect_cms(html: str, meta: dict, headers: dict) -> list[str]:
     return found
 
 
+def form_record(f: dict, is_https: bool) -> dict:
+    visible = [x for x in f.get("fields", []) if not x.get("honeypot")]
+    names = " ".join(x["name"].lower() for x in visible)
+    return {
+        "method": f["method"], "action_host": urlsplit(f["action"]).hostname,
+        "action_insecure": is_https and f["action"].startswith("http://"),
+        "id": f.get("id"),
+        "fields": [{"type": x["type"], "name": x["name"], "required": x["required"]} for x in visible[:20]],
+        "field_count": len(visible),
+        "required_count": sum(1 for x in visible if x["required"]),
+        "has_email": any(x["type"] == "email" for x in visible) or "mail" in names,
+        "has_phone": any(x["type"] == "tel" for x in visible) or bool(re.search(r"phone|tel", names)),
+        "has_textarea": any(x["tag"] == "textarea" for x in visible),
+        "consent_checkbox": any(x.get("consent") for x in visible),
+        "has_submit": f.get("has_submit", False),
+        "captcha": f.get("captcha"),
+        "honeypot_suspected": f.get("honeypot", False),
+        "csrf_token": f.get("csrf", False),
+        "novalidate": f.get("novalidate", False),
+        "hidden_fields": f.get("hidden", 0),
+    }
+
+
 def analyze_page(url: str, res: dict, base_host: str) -> tuple[dict, list[str]]:
     headers = res.get("headers", {})
     html = decode_body(res.get("body", b""), headers.get("content-type"))
@@ -495,12 +620,16 @@ def analyze_page(url: str, res: dict, base_host: str) -> tuple[dict, list[str]]:
 
     internal, external, nofollow, empty_anchor, js_links = [], set(), 0, 0, 0
     tel = mail = 0
-    tel_values, profiles = [], []
+    tel_values, profiles, external_urls = [], [], []
+    contacts: Counter = Counter()
     for ln in p.links:
         href = ln["href"]
         raw = ln["raw"].lower()
         if raw.startswith("javascript:"):
             js_links += 1
+            continue
+        if raw.startswith(CONTACT_SCHEMES):
+            contacts[CONTACT_SCHEME_KIND[raw.split(":", 1)[0]]] += 1
             continue
         if raw.startswith("tel:"):
             tel += 1
@@ -521,10 +650,18 @@ def analyze_page(url: str, res: dict, base_host: str) -> tuple[dict, list[str]]:
         else:
             host = urlsplit(href).hostname or ""
             external.add(host)
+            kind = CONTACT_HOSTS.get(host.lower().removeprefix("www."))
+            if kind:
+                contacts[kind] += 1
+            if len(external_urls) < 40:
+                external_urls.append(clip(strip_url(href), 300))
             generic_google = host.endswith(("google.com", "goo.gl")) and "maps" not in href.lower()
             if is_profile_host(host) and not generic_google and len(profiles) < 30:
                 profiles.append(clip(strip_url(href), 200))
 
+    contacts["tel"], contacts["mailto"] = tel, mail
+    contacts = Counter({k: v for k, v in contacts.items() if v})
+    analytics = extras.detect_analytics(p.scripts_external, p.inline_scripts, p.iframes)
     canon = [l["href"] for l in p.link_rels if l["rel"] == "canonical"]
     hreflang = [{"hreflang": clip(l["hreflang"], 20), "href": l["href"]} for l in p.link_rels
                 if l.get("hreflang")][:40]
@@ -589,7 +726,18 @@ def analyze_page(url: str, res: dict, base_host: str) -> tuple[dict, list[str]]:
             "missing_alt_samples": [i["src"] for i in imgs if i["alt"] is None and i["src"]][:5],
             "formats": dict(Counter((re.search(r"\.([a-z0-9]{3,4})(?:$|\?)", (i["src"] or "").lower())
                                      or [None, "other"])[1] for i in imgs).most_common(6)),
+            "with_srcset": p.srcset_images,
+            "modern_format_sources": p.modern_sources,
         },
+        "assets": {
+            "images": list(dict.fromkeys(i["src"] for i in imgs if i["src"]))[:60],
+            "stylesheets": list(dict.fromkeys(u for k, u in p.resources if k == "stylesheet"))[:20],
+            "scripts": list(dict.fromkeys(u for k, u in p.resources if k == "script"))[:20],
+        },
+        "analytics": analytics,
+        "contact_links": dict(contacts),
+        "external_urls": external_urls,
+        "orphan_fields": p.orphan_fields,
         "links": {
             "internal": len(internal),
             "internal_unique": len(set(internal)),
@@ -619,8 +767,7 @@ def analyze_page(url: str, res: dict, base_host: str) -> tuple[dict, list[str]]:
         "stylesheets": p.stylesheets,
         "preload_or_preconnect": p.preloads,
         "iframes": [urlsplit(u).hostname for u in p.iframes][:15],
-        "forms": [{"method": f["method"], "action_host": urlsplit(f["action"]).hostname,
-                   "action_insecure": is_https and f["action"].startswith("http://")} for f in p.forms][:10],
+        "forms": [form_record(f, is_https) for f in p.forms][:10],
         "password_field_on_http": (not is_https) and p.password_inputs > 0,
         "mixed_content": mixed,
         "cms_signals": detect_cms(html, meta, headers),
@@ -962,6 +1109,82 @@ SECURITY_HEADERS = ["strict-transport-security", "content-security-policy", "x-c
                     "cross-origin-opener-policy"]
 
 
+def check_assets(fetcher: SafeFetcher, pages: list, base_host: str, allowed, limit: int) -> dict | None:
+    """Size, format, compression and cache headers of images, CSS and JS used on the first pages.
+
+    HEAD requests (GET of 1 KB when HEAD is unreliable), the same polite fetcher as everywhere
+    else; robots.txt is honoured for same-site URLs.
+    """
+    if limit <= 0:
+        return None
+    sample = [p for p in pages if "title" in p][:5]
+    image_budget = max(1, limit * 2 // 3)
+    code_budget = max(1, (limit - image_budget) // 2)
+    wanted: list[tuple[str, str, int]] = []
+    seen: set = set()
+    for kind, field, budget in (("image", "images", image_budget), ("stylesheet", "stylesheets", code_budget),
+                                ("script", "scripts", code_budget)):
+        lists = [(p.get("assets") or {}).get(field, []) for p in sample]
+        taken = 0
+        for i in range(max((len(x) for x in lists), default=0)):  # round robin over the sampled pages
+            for lst in lists:
+                if i < len(lst) and lst[i] not in seen and taken < budget:
+                    seen.add(lst[i])
+                    wanted.append((kind, lst[i], sum(1 for q in lists if lst[i] in q)))
+                    taken += 1
+    items, blocked = [], 0
+    for kind, u, used in wanted[:limit]:
+        if not u.startswith(("http://", "https://")):
+            continue
+        if same_site(u, base_host) and not allowed(u):
+            blocked += 1
+            continue
+        res = fetcher.fetch(u, method="HEAD")
+        if head_unreliable(res):
+            res = fetcher.fetch(u, max_bytes=1024)
+        items.append(extras.asset_record(kind, u, res, used))
+    out = extras.summarize_assets(items)
+    out["blocked_by_robots"] = blocked
+    out["sampled_pages"] = len(sample)
+    out["note"] = ("Transfer sizes of files referenced by the first pages. Rendered size versus file size "
+                   "(oversized dimensions) needs a browser.")
+    return out
+
+
+def check_external_links(fetcher: SafeFetcher, pages: list, limit: int) -> list | None:
+    if limit <= 0:
+        return None
+    out = []
+    for u, found_on in extras.pick_external(pages, limit):
+        res = fetcher.fetch(u, method="HEAD")
+        if head_unreliable(res):
+            res = fetcher.fetch(u, max_bytes=32 * 1024)
+        out.append({"url": u, "status": res.get("status"), "hops": len(res.get("redirect_chain", [])),
+                    "class": extras.classify_external(res), "error": res.get("error"), "found_on": found_on})
+    return out
+
+
+def check_hreflang(fetcher: SafeFetcher, pages: list, base_host: str, allowed, limit: int) -> dict | None:
+    """hreflang validation; fetches a few same-site alternates that the crawl did not reach."""
+    real = [p for p in pages if "title" in p]
+    if not any(p.get("hreflang") for p in real):
+        return None
+    extra, fetched = {}, 0
+    for href in extras.hreflang_missing(real, clean_url, lambda u: same_site(u, base_host), max(0, limit)):
+        if not allowed(href):
+            continue
+        res = fetcher.fetch(href)
+        fetched += 1
+        ctype = (res.get("headers") or {}).get("content-type", "")
+        if res.get("error") or "html" not in ctype.lower():
+            extra[clean_url(href)] = {"url": href, "status": res.get("status"), "error": res.get("error")}
+            continue
+        page, _ = analyze_page(href, res, base_host)
+        extra[clean_url(href)] = page
+        extra[clean_url(res.get("final_url") or href)] = page
+    return extras.hreflang_check(real, extra, clean_url, lambda u: same_site(u, base_host), fetched)
+
+
 def pick_round_robin(candidates: list[str], limit: int, exclude: set[str]) -> list[str]:
     buckets: "OrderedDict[str, list[str]]" = OrderedDict()
     for u in candidates:
@@ -996,12 +1219,25 @@ def main() -> int:
     ap.add_argument("url", help="Site URL or domain, e.g. https://example.com")
     ap.add_argument("--out", required=True, help="Path of the JSON file to write")
     ap.add_argument("--max-pages", type=int, default=25, help="HTML pages to analyse (default 25, cap 200)")
-    ap.add_argument("--check-links", type=int, default=30, help="Extra internal links to status-check (default 30, cap 100)")
+    ap.add_argument("--check-links", type=int, default=30, help="Extra internal links to status-check (default 30, cap 300)")
+    ap.add_argument("--check-assets", type=int, default=30,
+                    help="Images, CSS and JS files to measure (size, format, compression, cache; default 30, cap 100)")
+    ap.add_argument("--check-external", type=int, default=10,
+                    help="External links to status-check, spread across hosts (default 10, cap 50)")
+    ap.add_argument("--check-hreflang", type=int, default=12,
+                    help="Same-site hreflang alternates to fetch for return-link checks (default 12, cap 30)")
+    ap.add_argument("--light", action="store_true",
+                    help="Skip every extra check (links, assets, external, hreflang): for quick competitor crawls")
     ap.add_argument("--delay", type=float, default=1.0, help="Seconds between requests to one host (min 0.5)")
     args = ap.parse_args()
 
     max_pages = max(1, min(args.max_pages, HARD_MAX_PAGES))
     link_checks = max(0, min(args.check_links, HARD_MAX_LINK_CHECKS))
+    asset_checks = max(0, min(args.check_assets, HARD_MAX_ASSET_CHECKS))
+    external_checks = max(0, min(args.check_external, HARD_MAX_EXTERNAL_CHECKS))
+    hreflang_fetches = max(0, min(args.check_hreflang, HARD_MAX_HREFLANG_FETCHES))
+    if args.light:
+        link_checks = asset_checks = external_checks = hreflang_fetches = 0
     started = time.monotonic()
 
     try:
@@ -1077,7 +1313,10 @@ def main() -> int:
 
     # pages
     pages, all_internal = [], []
+    link_source: dict[str, str] = {}
     home_page, home_links = analyze_page(start_url, home_res, base_host)
+    for l in home_links:
+        link_source.setdefault(l, start_url)
     home_page["is_start_url"] = True
     pages.append(home_page)
     all_internal.extend(home_links)
@@ -1111,6 +1350,8 @@ def main() -> int:
             page, links = analyze_page(u, res, base_host)
             pages.append(page)
             all_internal.extend(links)
+            for l in links:
+                link_source.setdefault(l, u)
 
     candidates = [u for u in OrderedDict.fromkeys(home_links + sitemap_urls) if is_crawlable_candidate(u)]
     crawl(pick_round_robin(candidates, max_pages * 2, fetched))
@@ -1131,7 +1372,12 @@ def main() -> int:
             if head_unreliable(res):
                 res = fetcher.fetch(u, max_bytes=32 * 1024)
             link_results.append({"url": u, "status": res.get("status"),
-                                 "hops": len(res.get("redirect_chain", [])), "error": res.get("error")})
+                                 "hops": len(res.get("redirect_chain", [])), "error": res.get("error"),
+                                 "found_on": link_source.get(u)})
+
+    external_results = check_external_links(fetcher, pages, external_checks)
+    hreflang_result = check_hreflang(fetcher, pages, base_host, allowed, hreflang_fetches)
+    asset_result = check_assets(fetcher, pages, base_host, allowed, asset_checks)
 
     # 404 behaviour
     probe = f"{origin}/seo-geo-audit-404-check-{secrets.token_hex(4)}"
@@ -1171,7 +1417,9 @@ def main() -> int:
         "target": start_url,
         "final_origin": origin,
         "collected_at": now_iso(),
-        "limits": {"max_pages": max_pages, "link_checks": link_checks, "delay_s": fetcher.delay},
+        "limits": {"max_pages": max_pages, "link_checks": link_checks, "asset_checks": asset_checks,
+                   "external_checks": external_checks, "hreflang_fetches": hreflang_fetches,
+                   "delay_s": fetcher.delay},
         "requests_made": fetcher.request_count,
         "duration_s": round(time.monotonic() - started, 1),
         "notes": notes,
@@ -1204,6 +1452,9 @@ def main() -> int:
             "images_missing_alt_total": sum(p["images"]["missing_alt"] for p in real_pages),
             "images_total": sum(p["images"]["count"] for p in real_pages),
             "entity": entity,
+            "analytics": extras.summarize_analytics(real_pages),
+            "forms": extras.summarize_forms(real_pages),
+            "contact_links": extras.summarize_contacts(real_pages),
             "third_party_script_hosts": [{"host": h, "pages": c} for h, c in third_party.most_common(30)],
             "avg_ttfb_ms": int(sum(p.get("ttfb_ms") or 0 for p in real_pages) / max(1, len(real_pages))),
             "max_html_bytes": max((p.get("html_bytes") or 0) for p in real_pages) if real_pages else 0,
@@ -1212,6 +1463,9 @@ def main() -> int:
         "crawl_issues": {"blocked_by_robots": blocked_by_robots[:30], "non_html": non_html[:30],
                          "failed": failed[:30]},
         "link_check": link_results,
+        "external_link_check": external_results,
+        "hreflang_check": hreflang_result,
+        "asset_check": asset_result,
         # known same-site URLs that were not fetched (sitemap + internal links); lets later steps
         # tell "page doesn't exist" from "page wasn't crawled"
         "uncrawled_urls": [u for u in OrderedDict.fromkeys(sitemap_urls + all_internal)
@@ -1228,6 +1482,10 @@ def main() -> int:
           f" | https: {security['https_final']}")
     for flag in report["sanity_flags"]:
         print(f"CHECK: {flag['code']}: {flag['detail']}")
+    for flag in s["analytics"]["flags"]:
+        print(f"NOTE: analytics: {flag['code']}: {flag['detail']}")
+    if hreflang_result and hreflang_result["issue_counts"]:
+        print(f"NOTE: hreflang issues: {hreflang_result['issue_counts']}")
     print(f"Wrote {args.out}")
     return 0
 

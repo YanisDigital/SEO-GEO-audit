@@ -7,7 +7,8 @@ Usage:
 If crawl.json sits next to each report.json (or is given with --prev-crawl /
 --crawl), site metrics are compared too.
 No network access: this only reads local files. The renderer picks up
-changes.json from the folder of the current report.json.
+changes.json from the folder of the current report.json. changes.json also holds the
+status of each previous task (fixed / partial / unchanged), see task_changes().
 """
 
 from __future__ import annotations
@@ -17,10 +18,11 @@ import json
 import os
 import re
 import sys
+from collections import Counter
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from render_report import (VISIBILITY_KEYS, as_list, compute_scores, compute_visibility,  # noqa: E402
-                           mention, norm_key, s)
+from render_report import (SEVERITIES, STATUS_KEYS, VISIBILITY_KEYS, as_list, compute_scores,  # noqa: E402
+                           compute_visibility, mention, norm_key, norm_sev, s)
 
 MAX_INPUT_BYTES = 64 * 1024 * 1024
 WORD = re.compile(r"\w+", re.UNICODE)
@@ -76,6 +78,72 @@ def weakness_changes(prev: dict, cur: dict) -> dict:
     return {"fixed": fixed, "new": new, "still_open": still}
 
 
+def sev_rank(w: dict) -> int:
+    return SEVERITIES.index(norm_sev(w.get("severity")))
+
+
+def task_changes(prev: dict, cur: dict) -> list[dict]:
+    """Status of every task of the previous audit: fixed, partial, unchanged or unknown.
+
+    A task points at the weaknesses it fixes with `fixes: [weakness keys]`. It is fixed when none of
+    them is left in the current report, partial when some are gone or one is still open at a lower
+    severity, unchanged otherwise. Without `fixes` the task is matched to the previous weakness whose
+    title is most similar (basis "title"). `task_status_overrides` in the current report.json sets the
+    status by hand, keyed by the previous task id, for what the keys cannot express (for example
+    "12 of 19 descriptions rewritten").
+    """
+    pw = [w for w in as_list(prev.get("weaknesses")) if isinstance(w, dict)]
+    cw = [w for w in as_list(cur.get("weaknesses")) if isinstance(w, dict)]
+    overrides = cur.get("task_status_overrides") if isinstance(cur.get("task_status_overrides"), dict) else {}
+    out = []
+    for task in as_list(prev.get("tasks")):
+        if not isinstance(task, dict):
+            continue
+        tid, item = s(task.get("id")), {"id": s(task.get("id")), "title": s(task.get("title"))}
+        ov = overrides.get(tid)
+        if isinstance(ov, dict) and norm_key(ov.get("status")) in STATUS_KEYS:
+            out.append({**item, "status": norm_key(ov["status"]), "basis": "override", "note": s(ov.get("note"))})
+            continue
+        closed, still, lowered, basis = [], [], False, "keys"
+        keys = [norm_key(k) for k in as_list(task.get("fixes")) if s(k)]
+        if keys:
+            for k in keys:
+                before = next((w for w in pw if norm_key(w.get("key")) == k), None)
+                now = next((w for w in cw if norm_key(w.get("key")) == k), None)
+                if now is None:
+                    closed.append(k)
+                else:
+                    still.append(k)
+                    lowered = lowered or (before is not None and sev_rank(now) > sev_rank(before))
+        else:
+            basis = "title"
+            best, best_score = None, 0.0
+            tt = tokens(task.get("title"))
+            for w in pw:
+                wt = tokens(w.get("title"))
+                score = len(tt & wt) / len(tt | wt) if tt and wt else 0.0
+                if score > best_score:
+                    best, best_score = w, score
+            if best is not None and best_score >= 0.3:
+                label = s(best.get("title"))
+                match = next((c for c in cw if same_issue(best, c)), None)
+                if match is None:
+                    closed.append(label)
+                else:
+                    still.append(label)
+                    lowered = sev_rank(match) > sev_rank(best)
+        if not closed and not still:
+            status = "unknown"
+        elif not still:
+            status = "fixed"
+        elif closed or lowered:
+            status = "partial"
+        else:
+            status = "unchanged"
+        out.append({**item, "status": status, "basis": basis, "closed": closed, "still_open": still, "note": ""})
+    return out
+
+
 def area_changes(prev: dict, cur: dict) -> list[dict]:
     before = {}
     for x in compute_scores(prev)[0]:
@@ -116,6 +184,10 @@ def check_changes(prev: dict, cur: dict) -> list[dict]:
 def crawl_metrics(crawl: dict) -> dict:
     pages = [p for p in crawl.get("pages", []) if isinstance(p, dict) and "title" in p]
     summ = crawl.get("site_summary") or {}
+    analytics, forms = summ.get("analytics"), summ.get("forms")
+    hreflang, external, links = crawl.get("hreflang_check"), crawl.get("external_link_check"), crawl.get("link_check")
+    images = ((crawl.get("asset_check") or {}).get("images") or {})
+    bad = lambda r: bool(r.get("error")) or (r.get("status") or 0) >= 400  # noqa: E731
     llms = (crawl.get("llms_txt") or {}).get("/llms.txt") or {}
     dup = lambda k: sum(x.get("count", 0) for x in summ.get(k) or [])  # noqa: E731
     return {
@@ -131,6 +203,15 @@ def crawl_metrics(crawl: dict) -> dict:
         "llms_txt": llms.get("status") == 200 and not llms.get("looks_like_html"),
         "sitemap_urls": summ.get("sitemap_urls"),
         "sanity_flags": len(crawl.get("sanity_flags") or []),
+        # newer collectors only: None when the earlier crawl did not measure it
+        "analytics_tools": len(analytics.get("tools") or []) if analytics else None,
+        "pages_without_tracking": analytics.get("pages_without_tracking_count") if analytics else None,
+        "forms_without_spam_protection": forms.get("forms_without_visible_spam_protection") if forms else None,
+        "images_over_200kb": images.get("over_200kb"),
+        "hreflang_issues": sum((hreflang.get("issue_counts") or {}).values()) if hreflang else None,
+        "internal_links_broken": sum(1 for r in links if bad(r)) if links else None,
+        "external_links_broken": (sum(1 for r in external if r.get("class") in ("broken", "unreachable"))
+                                  if external else None),
     }
 
 
@@ -156,7 +237,9 @@ def main() -> int:
         "areas": area_changes(prev, cur),
         "weaknesses": weakness_changes(prev, cur),
         "checks": check_changes(prev, cur),
+        "tasks": task_changes(prev, cur),
     }
+    out["task_counts"] = dict(Counter(x["status"] for x in out["tasks"]))
     pc, cc = load_crawl(args.previous, args.prev_crawl), load_crawl(args.current, args.crawl)
     if pc and cc:
         before, after = crawl_metrics(pc), crawl_metrics(cc)
@@ -168,6 +251,8 @@ def main() -> int:
     print(f"readiness {out['previous']['readiness']} -> {out['current']['readiness']}, "
           f"visibility {out['previous']['visibility']} -> {out['current']['visibility']}; "
           f"fixed {len(w['fixed'])}, new {len(w['new'])}, still open {len(w['still_open'])}")
+    if out["tasks"]:
+        print(f"tasks: {out['task_counts']}")
     print(f"Wrote {args.out}")
     return 0
 

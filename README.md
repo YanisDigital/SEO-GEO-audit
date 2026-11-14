@@ -3,9 +3,9 @@
 Give Claude a website URL and get:
 
 - **`report.html`** — a self-contained report: two headline scores (*Site readiness* and *Real visibility*, because a technically sound site can still be invisible in AI answers), scores by area with the deductions behind them, strengths, weaknesses with evidence, a snapshot of visibility in AI answers (Perplexity, Google AI Overviews, ChatGPT), an entity and listings check (is the name, address and phone consistent across maps and directories, which third-party credentials the site leaves out), a side-by-side comparison with the competitors that answer engines name instead of the client, content gaps (queries and competitor topics with no matching page), and on a repeat audit, what changed since the last one.
-- **`tz.md`** — a developer-ready action plan: tasks grouped into *do now / next 30 days / strategic*, each with steps, a code or text example, and acceptance criteria. The same tasks are exported to **`tasks.csv`** for Jira, Trello, Asana or a spreadsheet.
+- **`tz.md`** — a developer-ready action plan: tasks grouped into *do now / next 30 days / strategic*, each with steps, a code or text example, and acceptance criteria. The same tasks are exported to **`tasks.csv`** for Google Sheets, Jira, Trello or Asana, with columns for page, evidence and reproduction steps, impact, priority, owner and status.
 
-It covers classic SEO (indexability, canonicals, sitemaps, on-page, structured data, Core Web Vitals, mobile/JS rendering, hreflang, local) and **GEO/AEO** (AI crawler access in robots.txt, rendering for non-JS crawlers, answer-shaped content, entity signals, llms.txt, live answer-engine checks). It also checks passive trust and security hygiene (HTTPS, security headers, mixed content, disclosed versions).
+It covers classic SEO (indexability, canonicals, sitemaps, on-page, structured data, Core Web Vitals, mobile/JS rendering, hreflang, local) and **GEO/AEO** (AI crawler access in robots.txt, rendering for non-JS crawlers, answer-shaped content, entity signals, llms.txt, live answer-engine checks). It also checks passive trust and security hygiene (HTTPS, security headers, mixed content, disclosed versions), tracking snippets (GA4, GTM, pixels, consent tools), forms as markup (fields, spam protection signs, contact links), hreflang return links, image/CSS/JS weight and caching, and broken internal and external links.
 
 Reports are written in the language you talk to Claude in.
 
@@ -61,6 +61,7 @@ seo-geo-audit/
     netsafe.py                hardened HTTP client (SSRF-safe, size/time caps)
     collect.py                passive crawler -> crawl.json
     psi.py                    PageSpeed Insights summary -> psi.json
+    extras.py                 pure helpers: analytics, forms, hreflang, asset summaries
     benchmark.py              client vs competitor crawls -> benchmark.json (offline)
     gaps.py                   keyword list + crawls -> gaps.json (offline)
     compare.py                previous vs current audit -> changes.json (offline)
@@ -86,6 +87,7 @@ This skill reads content from websites you don't control, so it was designed def
 
 ## Limitations
 
+- It is a passive audit by URL. It does not submit forms or check that a lead reaches a manager, test catalogs, filters or carts, check other browsers or real phones, verify that analytics events fire, probe hidden paths, or inspect a CMS. Those need an authorised manual test and are listed as limitations in the report.
 - AI answers vary by user, location and time; live checks are a dated snapshot.
 - No access to Google Search Console, analytics, backlink databases or server logs. Recommendations involving them are labelled as such.
 - JavaScript-only content is detected heuristically by the crawler and confirmed in the browser when one is available.

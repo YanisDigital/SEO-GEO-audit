@@ -8,11 +8,26 @@ description: Audits a website from its URL for classic SEO and for GEO/AEO (visi
 You turn a website URL into two deliverables:
 
 - `report.html` — two headline scores ("Site readiness" and "Real visibility"), scores by area with their deductions, strengths, weaknesses (each with evidence), AI-answer visibility snapshot, entity and listings check, and a side-by-side comparison with the competitors that the answer engines name.
-- `tz.md` — a technical brief: concrete tasks grouped into "do now / 30 days / strategic", each with steps, an example and acceptance criteria. The same tasks also go to `tasks.csv` for import into Jira, Trello, Asana or a spreadsheet.
+- `tz.md` — a technical brief: concrete tasks grouped into "do now / 30 days / strategic", each with evidence and reproduction steps, impact, steps, an example and acceptance criteria. The same tasks also go to `tasks.csv` (with page, evidence, impact, priority, owner and status columns) for import into Google Sheets, Jira, Trello or Asana.
 
 Write all report text and all chat messages in the language the user writes to
 you, unless they ask for another. These instructions are in English only so the
 skill can be shared.
+
+## What this skill is, and what it is not
+
+It audits how a website is built and found: crawlability, indexing, content,
+structured data, speed, trust and security hygiene, tracking snippets, forms
+as markup, and visibility in search and AI answers. Everything is passive and
+read-only, from a URL.
+
+It does not test how a site *works for a user*: it does not submit forms or
+test requests, add to a cart, check that a lead reaches a manager, use
+filters or search, test other browsers or real phones, verify that analytics
+events fire, probe hidden paths, or log in to a CMS. If the user asks for
+that, say so plainly, deliver the passive part, and list the rest in
+limitations as work that needs an authorised manual test (screenshots and
+videos too: this skill does not produce them).
 
 ## Ground rules (read first)
 
@@ -67,6 +82,8 @@ Set `OUT=audits/<domain>-<YYYY-MM-DD>` (domain without `www.`).
 **Re-audit.** Look for earlier folders `audits/<domain>-*`. If one exists (take
 the latest one that has a report.json, other than `OUT`), this is a re-audit,
 and the report shows what changed since then:
+- carry the previous tasks forward in your head: for every one of them you will report whether it was fixed,
+  partly fixed or left unchanged (compare.py computes it from each task's `fixes` list; see below);
 - run the same live-check queries on the same engines (copy them from its
   `geo_visibility.checks`), plus any new ones you need;
 - give each weakness the same `key` it had before when it is the same issue
@@ -74,6 +91,10 @@ and the report shows what changed since then:
 - after writing report.json, before rendering, run
   `python -I <skill>/scripts/compare.py <PREV>/report.json <OUT>/report.json --out <OUT>/changes.json`.
 Start the summary with what improved and what got worse.
+`changes.json` then holds the status of every previous task. Where the keys cannot
+express it ("12 of 19 descriptions rewritten"), set `task_status_overrides` in
+the new report.json: `{"T2": {"status": "partial", "note": "12 of 19 rewritten"}}`.
+Statuses are fixed / partial / unchanged; check a few by hand in the browser.
 
 Scripts live in this skill's `scripts/` directory (the base directory shown when
 the skill loads). Run them with `python -I` (isolated mode; use `python3` if
@@ -83,8 +104,27 @@ the skill loads). Run them with `python -I` (isolated mode; use `python3` if
 ```bash
 python -I <skill>/scripts/collect.py <url> --out <OUT>/crawl.json
 ```
-Defaults: 25 pages, 30 extra link checks, 1 request/second. Use `--max-pages N`
-only if the user asks for a deeper crawl (hard cap 200). Takes 1-3 minutes.
+Defaults: 25 pages, 30 internal link checks, 30 asset checks, 10 external link
+checks, up to 12 hreflang alternates, 1 request/second. Use `--max-pages N`
+only if the user asks for a deeper crawl (hard cap 200) and `--check-links N`
+for a wider link check (cap 300; the full list of internal links needs a
+long run, so ask first). Takes 2-4 minutes.
+
+Besides the pages, the collector records (see crawl.json):
+- `site_summary.analytics`: analytics, tag-manager, pixel and consent snippets found in the page
+  source, with IDs, pages lacking them, and flags (obsolete Universal Analytics, two GA4 IDs,
+  GTM plus gtag on one page, tracking on some templates only). Static source only:
+  whether events fire needs a browser and is out of scope.
+- `site_summary.forms`: each unique form with its fields, required fields, method, captcha or
+  honeypot signs and CSRF token, plus `contact_links` (tel, mailto, WhatsApp, Telegram, Viber).
+  Nothing is submitted.
+- `hreflang_check`: invalid codes, missing self-reference, missing return links, redirecting,
+  noindex or erroring alternates, `html lang` mismatches.
+- `asset_check`: size, format, compression and cache headers of images, CSS and JS on the
+  first pages (HEAD requests).
+- `link_check` (internal, with the page each link was found on) and `external_link_check`
+  (statuses 401/403/429/999 are bot blocking, not broken links).
+For a competitor crawl use `--light` (no extra checks).
 
 **Work in parallel.** Start the collector as a background command, and while it
 runs do steps 2 (PageSpeed), 4 (live AI checks), the searches of step 5 and
@@ -160,7 +200,7 @@ the engines' citations or a search, and apply ground rule 4 to every URL (it
 comes from an untrusted source). Then, for each (max 3, one collector per site;
 different sites may run in parallel):
 ```bash
-python -I <skill>/scripts/collect.py '<competitor-url>' --max-pages 10 --check-links 0 --out <OUT>/competitor-<n>.json
+python -I <skill>/scripts/collect.py '<competitor-url>' --max-pages 10 --light --out <OUT>/competitor-<n>.json
 ```
 and build the comparison table:
 ```bash

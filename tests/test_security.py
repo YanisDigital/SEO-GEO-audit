@@ -16,6 +16,7 @@ sys.path.insert(0, os.path.abspath(SCRIPTS))
 import benchmark  # noqa: E402
 import collect  # noqa: E402
 import compare  # noqa: E402
+import extras  # noqa: E402
 import gaps  # noqa: E402
 import netsafe  # noqa: E402
 import psi  # noqa: E402
@@ -276,9 +277,34 @@ class CSVTests(unittest.TestCase):
         import csv
         import io
         rows = list(csv.reader(io.StringIO(render_report.render_csv(d, render_report.DEFAULT_LABELS))))
+        L = render_report.DEFAULT_LABELS
+        col = rows[0].index
         self.assertEqual([r[0] for r in rows[1:]], ["T1", "T2"])  # sorted by wave
-        self.assertEqual(rows[2][4], "'=cmd()")
-        self.assertEqual(rows[2][6], "1. a\n2. b")
+        self.assertEqual(rows[2][col(L["task_title"])], "'=cmd()")
+        self.assertEqual(rows[2][col(L["steps"])], "1. a\n2. b")
+        self.assertEqual(rows[1][col(L["status"])], L["status_open"])
+
+    def test_tasks_csv_has_evidence_impact_and_status(self):
+        import csv
+        import io
+        d = {"tasks": [{"id": "T1", "wave": "now", "priority": "P1", "title": "Fix",
+                        "evidence": ["=HYPERLINK(1)", "Open /contacts"], "impact": "Leads are lost",
+                        "status": "partial", "status_note": "12 of 19 done"}]}
+        L = render_report.DEFAULT_LABELS
+        rows = list(csv.reader(io.StringIO(render_report.render_csv(d, L))))
+        col = rows[0].index
+        self.assertEqual(rows[1][col(L["evidence_repro"])], "'=HYPERLINK(1)\nOpen /contacts")
+        self.assertEqual(rows[1][col(L["impact"])], "Leads are lost")
+        self.assertEqual((rows[1][col(L["status"])], rows[1][col(L["status_note"])]),
+                         (L["status_partial"], "12 of 19 done"))
+
+    def test_status_comes_from_changes_when_id_and_title_match(self):
+        ch = {"tasks": [{"id": "T1", "title": "Add canonical tags", "status": "fixed", "note": "ok"}]}
+        same = {"id": "T1", "title": "Add canonical tags to all pages"}
+        other = {"id": "T1", "title": "Compress hero images"}
+        self.assertEqual(render_report.task_status(same, ch), ("fixed", "ok"))
+        self.assertEqual(render_report.task_status(other, ch), (None, ""))
+        self.assertEqual(render_report.task_status({"status": "bogus"}, None), (None, ""))
 
 
 class ScoringTests(unittest.TestCase):
@@ -525,6 +551,189 @@ class GapsTests(unittest.TestCase):
         html_out = render_report.render_gaps(g, evil, render_report.DEFAULT_LABELS)
         self.assertNotIn("<img", html_out)
         self.assertNotIn('href="javascript', html_out)
+
+
+class TaskStatusTests(unittest.TestCase):
+    PREV = {"weaknesses": [{"key": "no-canonical", "title": "No canonical", "severity": "high"},
+                           {"key": "dup-desc", "title": "Duplicate descriptions", "severity": "medium"},
+                           {"key": "no-hsts", "title": "No HSTS", "severity": "medium"}],
+            "tasks": [{"id": "T1", "title": "Add canonicals", "fixes": ["no-canonical"]},
+                      {"id": "T2", "title": "Rewrite descriptions", "fixes": ["dup-desc"]},
+                      {"id": "T3", "title": "Security headers", "fixes": ["no-hsts", "no-canonical"]},
+                      {"id": "T4", "title": "Enable HSTS header", "fixes": ["no-hsts"]},
+                      {"id": "T5", "title": "No HSTS", },
+                      {"id": "T6", "title": "Something unrelated entirely"},
+                      {"id": "T7", "title": "Rewrite descriptions by hand", "fixes": ["dup-desc"]}]}
+    CUR = {"weaknesses": [{"key": "dup-desc", "title": "Duplicate descriptions", "severity": "low"},
+                          {"key": "no-hsts", "title": "No HSTS", "severity": "medium"}],
+           "task_status_overrides": {"T7": {"status": "partial", "note": "12 of 19 rewritten"},
+                                     "T6": {"status": "nonsense"}}}
+
+    def test_statuses(self):
+        by_id = {x["id"]: x for x in compare.task_changes(self.PREV, self.CUR)}
+        self.assertEqual(by_id["T1"]["status"], "fixed")        # canonical gone
+        self.assertEqual(by_id["T2"]["status"], "partial")      # still open, severity lowered
+        self.assertEqual(by_id["T3"]["status"], "partial")      # one of two keys gone
+        self.assertEqual(by_id["T4"]["status"], "unchanged")
+        self.assertEqual((by_id["T5"]["status"], by_id["T5"]["basis"]), ("unchanged", "title"))
+        self.assertEqual(by_id["T6"]["status"], "unknown")      # invalid override is ignored
+        self.assertEqual((by_id["T7"]["status"], by_id["T7"]["note"], by_id["T7"]["basis"]),
+                         ("partial", "12 of 19 rewritten", "override"))
+
+    def test_status_table_is_escaped(self):
+        evil = "<script>alert(1)</script>"
+        ch = {"tasks": [{"id": evil, "title": evil, "status": "fixed", "note": evil},
+                        {"id": "T2", "title": "x", "status": evil}]}
+        html_out = render_report.render_changes(ch, render_report.DEFAULT_LABELS)
+        self.assertNotIn("<script", html_out)
+        self.assertIn(render_report.DEFAULT_LABELS["status_unknown"], html_out)
+
+
+class AnalyticsTests(unittest.TestCase):
+    def tools(self, srcs=(), inline=(), iframes=()):
+        return {t["tool"]: t["ids"] for t in extras.detect_analytics(list(srcs), list(inline), list(iframes))["tools"]}
+
+    def test_standard_snippets(self):
+        found = self.tools(
+            srcs=["https://www.googletagmanager.com/gtag/js?id=G-ABCDEF1234",
+                  "https://connect.facebook.net/en_US/fbevents.js", "https://www.clarity.ms/tag/abcdefghij"],
+            inline=["window.dataLayer=window.dataLayer||[];gtag('config','G-ABCDEF1234');fbq('init','1234567890');"
+                    "(function(w,d,s,l,i){})(window,document,'script','dataLayer','GTM-ABC1234');"],
+            iframes=["https://www.googletagmanager.com/ns.html?id=GTM-ABC1234"])
+        self.assertEqual(found["Google Analytics (gtag.js)"], ["G-ABCDEF1234"])
+        self.assertEqual(found["Google Tag Manager"], ["GTM-ABC1234"])
+        self.assertEqual(found["Meta Pixel"], ["1234567890"])
+        self.assertIn("Microsoft Clarity", found)
+
+    def test_disabled_config_is_not_a_tracker(self):
+        cfg = ("metaPixel: { enabled: false, pixelIds: [], scriptUrl: 'https://connect.facebook.net/en_US/fbevents.js' },"
+               " clarity: { id: 'x' }, ym: 'mc.yandex.ru/metrika/tag.js'")
+        self.assertEqual(self.tools(inline=[cfg]), {})
+
+    def test_obsolete_and_double_counting_flags(self):
+        def page(url, tools):
+            return {"url": url, "analytics": {"tools": tools, "event_snippets": {}}}
+        ga = {"tool": "Google Analytics (gtag.js)", "ids": ["G-AAAAAAAA", "UA-1234567-1"]}
+        gtm = {"tool": "Google Tag Manager", "ids": ["GTM-ABC1234"]}
+        pages = [page("a", [ga, gtm]), page("b", [gtm]), page("c", [gtm])]
+        codes = {f["code"] for f in extras.summarize_analytics(pages)["flags"]}
+        self.assertEqual(codes, {"obsolete_universal_analytics", "gtm_and_direct_gtag", "tracking_on_some_pages_only"})
+        self.assertEqual({f["code"] for f in extras.summarize_analytics([page("a", [])])["flags"]},
+                         {"no_analytics_detected"})
+
+    def test_huge_inline_script_is_fast(self):
+        blob = "gtag(" * 20_000 + "fbq(" * 20_000
+        _, elapsed = timed(extras.detect_analytics, [], [blob[:6000]] * 40, [])
+        self.assertLess(elapsed, FAST)
+
+
+class FormTests(unittest.TestCase):
+    HTML = (b"<html><head><title>t</title></head><body>"
+            b"<form action='/send' method='post' id='lead'>"
+            b"<input type='text' name='name' required><input type='email' name='email' required>"
+            b"<input type='tel' name='phone'><textarea name='msg'></textarea>"
+            b"<input type='text' name='website' style='display:none' tabindex='-1'>"
+            b"<input type='hidden' name='csrf_token' value='SECRET'>"
+            b"<input type='checkbox' name='privacy_consent'>"
+            b"<div class='g-recaptcha' data-sitekey='k'></div><button>Send</button></form>"
+            b"<form action='http://example.com/s' method='get'><input type='email' name='mail'></form>"
+            b"<input type='text' name='outside'></body></html>")
+
+    def test_form_inventory(self):
+        page, _ = collect.analyze_page("https://example.com/", HTMLParsingTests.page(self.HTML), "example.com")
+        f1, f2 = page["forms"]
+        self.assertEqual((f1["field_count"], f1["required_count"]), (5, 2))   # honeypot excluded
+        self.assertEqual((f1["captcha"], f1["honeypot_suspected"], f1["csrf_token"]), ("reCAPTCHA", True, True))
+        self.assertTrue(f1["has_email"] and f1["has_phone"] and f1["has_textarea"] and f1["has_submit"])
+        self.assertTrue(f1["consent_checkbox"])
+        self.assertTrue(f2["action_insecure"])
+        self.assertEqual(page["orphan_fields"], 1)
+        self.assertNotIn("SECRET", repr(page["forms"]))                      # values are never stored
+
+    def test_summary_flags_unprotected_forms(self):
+        page, _ = collect.analyze_page("https://example.com/", HTMLParsingTests.page(self.HTML), "example.com")
+        summary = extras.summarize_forms([page, page])
+        self.assertEqual(summary["unique_forms"], 2)
+        self.assertEqual(summary["forms_without_visible_spam_protection"], 1)
+        self.assertEqual((summary["forms_with_get_method"], summary["forms_posting_insecurely"]), (1, 1))
+        self.assertEqual(summary["forms"][0]["pages"], 2)
+
+    def test_contact_links(self):
+        html = (b"<html><body><a href='tel:+1555'>c</a><a href='mailto:a@b.c'>m</a>"
+                b"<a href='https://wa.me/1555'>w</a><a href='viber://chat?number=1'>v</a>"
+                b"<a href='https://t.me/x'>t</a></body></html>")
+        page, _ = collect.analyze_page("https://example.com/", HTMLParsingTests.page(html), "example.com")
+        self.assertEqual(page["contact_links"], {"tel": 1, "mailto": 1, "whatsapp": 1, "viber": 1, "telegram": 1})
+
+
+class HreflangTests(unittest.TestCase):
+    key = staticmethod(lambda u: (u or "").rstrip("/").lower())
+    same = staticmethod(lambda u: "example.com" in u)
+
+    def page(self, url, alts, lang="en", **kw):
+        return {"url": url, "final_url": url, "title": "t", "status": 200, "lang": lang,
+                "hreflang": [{"hreflang": c, "href": h} for c, h in alts], **kw}
+
+    def check(self, pages, extra=None):
+        return extras.hreflang_check(pages, extra or {}, self.key, self.same)
+
+    def test_valid_cluster_has_no_issues(self):
+        en, uk = "https://example.com/", "https://example.com/uk/"
+        alts = [("en", en), ("uk", uk), ("x-default", en)]
+        res = self.check([self.page(en, alts), self.page(uk, alts, lang="uk")])
+        self.assertEqual(res["issue_counts"], {})
+        self.assertTrue(res["x_default_present"])
+
+    def test_problems(self):
+        en, uk = "https://example.com/", "https://example.com/uk/"
+        pages = [self.page(en, [("en", en), ("uk", uk), ("english", en), ("de", "https://example.com/de/")]),
+                 self.page(uk, [("uk", uk)], lang="ru"),
+                 self.page("https://example.com/fr/", [("fr-FR", "https://example.com/fr/x")], lang="fr")]
+        extra = {self.key("https://example.com/de/"): {"url": "https://example.com/de/", "status": 404}}
+        counts = self.check(pages, extra)["issue_counts"]
+        self.assertEqual(counts.get("invalid_code"), 1)
+        self.assertEqual(counts.get("no_return_link"), 1)            # uk does not link back to en
+        self.assertEqual(counts.get("alternate_error"), 1)           # de returns 404
+        self.assertEqual(counts.get("lang_mismatch"), 1)             # html lang=ru, hreflang uk
+        self.assertEqual(counts.get("missing_self_reference"), 1)    # /fr/ lists only /fr/x
+
+    def test_missing_alternates_are_listed_for_fetching(self):
+        en = "https://example.com/"
+        pages = [self.page(en, [("en", en), ("uk", "https://example.com/uk/"), ("de", "https://other.org/de/")])]
+        self.assertEqual(extras.hreflang_missing(pages, self.key, self.same, 5), ["https://example.com/uk/"])
+
+
+class AssetTests(unittest.TestCase):
+    def test_records_and_summary(self):
+        def rec(kind, url, size, ctype, enc=None, cache="max-age=60"):
+            res = {"status": 200, "headers": {"content-length": str(size), "content-type": ctype,
+                                              **({"content-encoding": enc} if enc else {}),
+                                              **({"cache-control": cache} if cache else {})}}
+            return extras.asset_record(kind, url, res)
+        items = [rec("image", "https://x/a.jpg", 900_000, "image/jpeg"),
+                 rec("image", "https://x/b.webp", 50_000, "image/webp", cache="max-age=31536000"),
+                 rec("script", "https://x/app.js", 400_000, "application/javascript"),
+                 rec("stylesheet", "https://x/s.css", 90_000, "text/css", enc="gzip", cache=None)]
+        out = extras.summarize_assets(items)
+        self.assertEqual(out["images"]["over_200kb"], 1)
+        self.assertEqual(out["images"]["over_500kb"], 1)
+        self.assertEqual(out["images"]["modern_format_share_pct"], 50)
+        self.assertEqual(out["images"]["short_cache"], 1)
+        self.assertEqual(out["scripts"]["uncompressed_text"], 1)
+        self.assertEqual(out["stylesheets"]["no_cache_header"], 1)
+        self.assertEqual(out["images"]["largest"][0]["kb"], 879)
+
+    def test_external_links(self):
+        self.assertEqual([extras.classify_external(r) for r in (
+            {"status": 200}, {"status": 999}, {"status": 403}, {"status": 404}, {"status": 503},
+            {"error": "network_error"})], ["ok", "bot_blocked", "bot_blocked", "broken", "server_error", "unreachable"])
+        pages = [{"url": "p1", "external_urls": ["https://a.example/1", "https://a.example/2", "https://a.example/3",
+                                                 "https://b.example/1"]},
+                 {"url": "p2", "external_urls": ["https://a.example/1", "https://c.example/x"]}]
+        picked = extras.pick_external(pages, 5)
+        self.assertEqual([u for u, _ in picked], ["https://a.example/1", "https://b.example/1", "https://c.example/x",
+                                                  "https://a.example/2"])
+        self.assertEqual(picked[0][1], "p1")
 
 
 if __name__ == "__main__":

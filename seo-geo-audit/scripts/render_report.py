@@ -127,6 +127,23 @@ DEFAULT_LABELS = {
     "competitor_topics": "Competitor topics the site doesn't cover",
     "topic": "Topic",
     "gaps_note": "Lexical matching of word stems against titles, headings, URLs and text of the crawled pages: a list of leads to review, not a verdict.",
+    "status": "Status",
+    "status_note": "Status note",
+    "status_open": "open",
+    "status_fixed": "fixed",
+    "status_partial": "partly fixed",
+    "status_unchanged": "unchanged",
+    "status_unknown": "not determined",
+    "evidence_repro": "Evidence and steps to reproduce",
+    "impact": "Impact",
+    "task_status": "Status of the previous tasks",
+    "cm_analytics_tools": "Analytics tools detected",
+    "cm_pages_without_tracking": "Pages without tracking code",
+    "cm_forms_without_spam_protection": "Forms without visible spam protection",
+    "cm_images_over_200kb": "Images over 200 KB (sample)",
+    "cm_hreflang_issues": "hreflang issues",
+    "cm_internal_links_broken": "Broken internal links (sample)",
+    "cm_external_links_broken": "Broken external links (sample)",
     "wave": "Wave",
     "priority": "Priority",
     "task_title": "Task",
@@ -367,7 +384,40 @@ def delta_tag(before, after, higher_is_better=True) -> str:
     return f' <span class="tag {"yes" if good else "no"}">{sign}{e(abs(diff))}</span>'
 
 
-LOWER_IS_BETTER = {"pages_without_canonical", "pages_missing_description", "pages_with_duplicate_description",
+STATUS_KEYS = ("open", "fixed", "partial", "unchanged", "unknown")
+STATUS_CLASS = {"open": "", "fixed": "fixed", "partial": "partial", "unchanged": "unchanged", "unknown": ""}
+WORD_RX = re.compile(r"\w+", re.UNICODE)
+
+
+def titles_similar(a, b, threshold: float = 0.5) -> bool:
+    ta = {w[:6] for w in WORD_RX.findall(s(a).lower()) if len(w) > 2}
+    tb = {w[:6] for w in WORD_RX.findall(s(b).lower()) if len(w) > 2}
+    return bool(ta and tb) and len(ta & tb) / len(ta | tb) >= threshold
+
+
+def task_status(task: dict, changes) -> tuple[str | None, str]:
+    """Status of a task: its own `status`, else the one compare.py computed for the same id and title."""
+    own = norm_key(task.get("status"))
+    if own in STATUS_KEYS:
+        return own, s(task.get("status_note"))
+    if isinstance(changes, dict):
+        for x in as_list(changes.get("tasks")):
+            if isinstance(x, dict) and s(x.get("id")) == s(task.get("id")) \
+                    and titles_similar(x.get("title"), task.get("title")) and norm_key(x.get("status")) in STATUS_KEYS:
+                return norm_key(x.get("status")), s(x.get("note"))
+    return None, ""
+
+
+def status_tag(status: str | None, L) -> str:
+    if status not in STATUS_KEYS:
+        return ""
+    cls = STATUS_CLASS[status]
+    return f'<span class="tag {cls}">{e(L["status_" + status])}</span>'
+
+
+LOWER_IS_BETTER = {"pages_without_tracking", "forms_without_spam_protection", "images_over_200kb",
+                   "hreflang_issues", "internal_links_broken", "external_links_broken",
+                   "pages_without_canonical", "pages_missing_description", "pages_with_duplicate_description",
                    "pages_with_duplicate_title", "pages_without_h1", "images_missing_alt", "avg_ttfb_ms",
                    "sanity_flags"}
 
@@ -396,6 +446,16 @@ def render_changes(ch: dict, L: dict) -> str:
             out.append(f'<li><span class="tag {sev}">{e(L["severity_" + sev])}</span>{e(x.get("title"))}</li>')
         out.append("</ul></div>")
     out.append("</div>")
+    ptasks = [x for x in as_list(ch.get("tasks")) if isinstance(x, dict)]
+    if ptasks:
+        out.append(f'<h3 class="sub">{e(L["task_status"])}</h3><div class="table-wrap"><table><thead><tr>'
+                   f'<th>ID</th><th>{e(L["task_title"])}</th><th>{e(L["status"])}</th><th>{e(L["status_note"])}</th>'
+                   '</tr></thead><tbody>')
+        for x in ptasks[:60]:
+            sv = norm_key(x.get("status"))
+            out.append(f'<tr><td>{e(x.get("id"))}</td><td>{e(x.get("title"))}</td>'
+                       f'<td>{status_tag(sv if sv in STATUS_KEYS else "unknown", L)}</td><td>{e(x.get("note"))}</td></tr>')
+        out.append("</tbody></table></div>")
     checks = [c for c in as_list(ch.get("checks")) if isinstance(c, dict)]
     if checks:
         def st(v):
@@ -615,15 +675,24 @@ def render_html(d: dict, L: dict) -> str:
             for t in wt:
                 prio = norm_prio(t.get("priority"))
                 opened = " open" if wave == "now" else ""
+                st_key, st_note = task_status(t, d.get("changes"))
+                st_html = status_tag(st_key, L)
                 out.append(f'<details class="task"{opened}><summary><span class="tid">{e(t.get("id"))}</span>'
                            f'<span class="tag {prio.lower()}">{e(prio)}</span>'
                            f'<span class="ttl">{e(t.get("title"))}</span>'
                            f'<span class="tag">{e(L["effort"])}: {e(t.get("effort"))}</span>'
-                           f'<span class="tag">{e(t.get("owner"))}</span></summary><div class="body">')
+                           f'<span class="tag">{e(t.get("owner"))}</span>{st_html}</summary><div class="body">')
+                if st_note:
+                    out.append(f'<p class="muted">{e(L["status_note"])}: {e(st_note)}</p>')
                 if t.get("area"):
                     out.append(f'<h4>{e(L["area"])}</h4><p>{e(t["area"])}</p>')
                 if t.get("why"):
                     out.append(f'<h4>{e(L["why"])}</h4><p>{e(t["why"])}</p>')
+                ev = [s(x) for x in as_list(t.get("evidence")) if s(x)]
+                if ev:
+                    out.append(f'<h4>{e(L["evidence_repro"])}</h4><ul>' + "".join(f"<li>{e(x)}</li>" for x in ev) + "</ul>")
+                if t.get("impact"):
+                    out.append(f'<h4>{e(L["impact"])}</h4><p>{e(t["impact"])}</p>')
                 steps = as_list(t.get("steps"))
                 if steps:
                     out.append(f'<h4>{e(L["steps"])}</h4><ol>' + "".join(f"<li>{e(x)}</li>" for x in steps) + "</ol>")
@@ -816,8 +885,19 @@ def render_md(d: dict, L: dict) -> str:
             if meta:
                 lines.append(" · ".join(meta))
             lines.append("")
+            st_key, st_note = task_status(t, d.get("changes"))
+            if st_key:
+                lines += [f'**{md_text(L["status"])}:** {md_text(L["status_" + st_key])}'
+                          + (f' ({md_text(st_note)})' if st_note else ""), ""]
             if t.get("why"):
                 lines += [f'**{md_text(L["why"])}:** {md_text(t["why"])}', ""]
+            ev = [s(x) for x in as_list(t.get("evidence")) if s(x)]
+            if ev:
+                lines.append(f'**{md_text(L["evidence_repro"])}:**')
+                lines += [f"- {md_text(x)}" for x in ev]
+                lines.append("")
+            if t.get("impact"):
+                lines += [f'**{md_text(L["impact"])}:** {md_text(t["impact"])}', ""]
             steps = as_list(t.get("steps"))
             if steps:
                 lines.append(f'**{md_text(L["steps"])}:**')
@@ -851,11 +931,12 @@ def csv_cell(value) -> str:
 
 
 def render_csv(d: dict, L: dict) -> str:
-    """tasks.csv for Jira/Trello/Asana/Sheets imports: one row per task."""
+    """tasks.csv for Google Sheets / Jira / Trello / Asana: one row per task, report columns included."""
     waves = {w: L[lab] for w, lab in WAVES}
     order = {w: i for i, (w, _) in enumerate(WAVES)}
-    cols = ["ID", L["wave"], L["priority"], L["area"], L["task_title"], L["why"], L["steps"],
-            L["acceptance"], L["effort"], L["owner"], L["pages"]]
+    cols = ["ID", L["wave"], L["priority"], L["area"], L["task_title"], L["pages"], L["evidence_repro"],
+            L["impact"], L["why"], L["steps"], L["acceptance"], L["effort"], L["owner"], L["status"],
+            L["status_note"]]
     buf = io.StringIO()
     w = csv.writer(buf, quoting=csv.QUOTE_ALL, lineterminator="\r\n")
     w.writerow([csv_cell(c) for c in cols])
@@ -863,12 +944,14 @@ def render_csv(d: dict, L: dict) -> str:
     tasks.sort(key=lambda t: (order.get(s(t.get("wave")).lower(), len(WAVES)), norm_prio(t.get("priority"))))
     for t in tasks:
         wave = s(t.get("wave")).lower()
+        st_key, st_note = task_status(t, d.get("changes"))
         row = [t.get("id"), waves.get(wave, wave), norm_prio(t.get("priority")), t.get("area"), t.get("title"),
-               t.get("why"),
+               "\n".join(s(p) for p in as_list(t.get("pages"))[:20]),
+               "\n".join(s(x) for x in as_list(t.get("evidence")) if s(x)),
+               t.get("impact"), t.get("why"),
                "\n".join(f"{i}. {s(x)}" for i, x in enumerate(as_list(t.get("steps")), 1)),
                "\n".join(f"\u2022 {s(x)}" for x in as_list(t.get("acceptance"))),
-               t.get("effort"), t.get("owner"),
-               "\n".join(s(p) for p in as_list(t.get("pages"))[:20])]
+               t.get("effort"), t.get("owner"), L["status_" + (st_key or "open")], st_note]
         w.writerow([csv_cell(c) for c in row])
     return buf.getvalue()
 
@@ -901,6 +984,12 @@ def main() -> int:
             L[k] = v
     lang = s(d.get("language") or "en")
     lang = lang if LANG_RX.match(lang) else "en"
+    if lang.split("-")[0].lower() != "en":
+        given = d.get("labels") if isinstance(d.get("labels"), dict) else {}
+        missing = [k for k in DEFAULT_LABELS if not (isinstance(given.get(k), str) and given[k].strip())]
+        if missing:
+            print(f"NOTE: {len(missing)} label(s) are missing in report.json and fall back to English: "
+                  + ", ".join(missing[:8]) + (" ..." if len(missing) > 8 else ""), file=sys.stderr)
 
     body, title = render_html(d, L)
     with open(TEMPLATE, encoding="utf-8") as fh:

@@ -78,7 +78,9 @@ that is what practitioners use.
   ],
   "tasks": [
     {"id": "T1", "wave": "now|30d|strategic", "priority": "P1|P2|P3", "area": "...",
-     "title": "imperative, specific", "why": "impact + evidence", "steps": ["..."],
+     "title": "imperative, specific", "why": "impact + evidence",
+     "evidence": ["page or element, what is wrong, steps to reproduce"], "impact": "what it costs the business",
+     "fixes": ["weakness-key"], "steps": ["..."],
      "code": "optional snippet", "acceptance": ["verifiable check"],
      "effort": "S|M|L", "owner": "developer|content|marketing|owner", "pages": ["https://..."]}
   ],
@@ -97,6 +99,19 @@ computes them. **weaknesses**: set `area_key` to the area the issue deducts
 from (or use exactly the same `area` text as the score entry). Weaknesses
 about live AI/search visibility use `area_key: "visibility"`: they are listed
 but deduct nothing, because that score is measured directly.
+
+**tasks[].evidence**: one or more lines a developer can follow without the rest of
+the report: where (URL or element), what is wrong (quote the value), and how to see
+it (for example "open /contacts, view source, search for `<form`"). **tasks[].impact**:
+one business sentence. **tasks[].fixes**: the `key`s of the weaknesses the task
+resolves; a re-audit uses them to mark the task fixed, partly fixed or unchanged.
+Optional `status` (`open|fixed|partial|unchanged`) and `status_note` set a status by
+hand; `task_status_overrides` at the top level does the same for the previous
+report's tasks. The renderer writes the tasks to `tasks.csv` with these columns:
+ID, wave, priority, area, task, pages, evidence and reproduction steps, impact, why,
+steps, acceptance, effort, owner, status, status note.
+The skill does not capture screenshots or video: describe the steps instead, and
+say in limitations that visual evidence needs a manual pass.
 
 **weaknesses[].key**: a short, stable slug for the issue (`no-canonical`,
 `duplicate-meta-description`, `old-address-on-listings`). In a re-audit, reuse
