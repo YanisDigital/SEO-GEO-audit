@@ -22,7 +22,7 @@ from collections import Counter
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from render_report import (SEVERITIES, STATUS_KEYS, VISIBILITY_KEYS, as_list, compute_scores,  # noqa: E402
-                           compute_visibility, mention, norm_key, norm_sev, s)
+                           compute_visibility, content_basis, mention, norm_key, norm_sev, s)
 
 MAX_INPUT_BYTES = 64 * 1024 * 1024
 WORD = re.compile(r"\w+", re.UNICODE)
@@ -228,6 +228,10 @@ def main() -> int:
     except (OSError, ValueError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
+    pc, cc = load_crawl(args.previous, args.prev_crawl), load_crawl(args.current, args.crawl)
+    for report, crawl in ((prev, pc), (cur, cc)):
+        if crawl:
+            report["_content_basis"] = content_basis(crawl)  # same readiness rule as the renderer
     ps, cs = (prev.get("site") or {}), (cur.get("site") or {})
     out = {
         "previous": {"audit_date": s(ps.get("audit_date")) or None, "readiness": compute_scores(prev)[1],
@@ -240,7 +244,6 @@ def main() -> int:
         "tasks": task_changes(prev, cur),
     }
     out["task_counts"] = dict(Counter(x["status"] for x in out["tasks"]))
-    pc, cc = load_crawl(args.previous, args.prev_crawl), load_crawl(args.current, args.crawl)
     if pc and cc:
         before, after = crawl_metrics(pc), crawl_metrics(cc)
         out["site_metrics"] = [{"metric": k, "before": before[k], "after": after[k]} for k in after]

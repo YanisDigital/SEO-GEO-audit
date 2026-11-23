@@ -160,7 +160,13 @@ can be traced:
   at its severity, not one per page. Severities are the score, so choose them
   with the severity guide in seo-checklist.md section 10.
 - **Site readiness** = weighted average of the area scores, `technical` and
-  `geo` ×1.5, rounded half up.
+  `geo` ×1.5, rounded half up. It is shown as "not scored" when the crawl saw
+  too little text to judge (under 300 words in total, or a median under 100
+  words with 3+ pages): scores built from deductions would make an empty stub
+  or a JavaScript-only site look good. The renderer reads crawl.json next to
+  report.json for this. Say in the summary why it is not scored (wrong URL,
+  placeholder page, content loaded only by JavaScript) and report that cause as
+  a weakness.
 - **Real visibility** = average over non-brand checks with a result: cited with
   a link to the site 1, named without a link 0.6, `partial` 0.3, absent 0;
   times 100. Checks marked unavailable (e.g. "n/a") are skipped. With fewer than

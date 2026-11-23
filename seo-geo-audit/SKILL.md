@@ -282,8 +282,9 @@ The renderer computes the area scores, "Site readiness" and "Real visibility"
 from your weaknesses and checks, adds `benchmark.json`, `changes.json` and
 `gaps.json` from the same folder when they exist, and writes `report.html`,
 `tz.md` and `tasks.csv`. Read its `WARNING`/`NOTE` lines: a weakness that matches no area
-deducts nothing, and a stated score that differs from the computed one is
-replaced.
+deducts nothing, a stated score that differs from the computed one is
+replaced, and "site readiness not scored" means the crawl saw too little
+text for a score to mean anything (explain why in the summary).
 
 ### 11. Reply in chat
 In the user's language, briefly:

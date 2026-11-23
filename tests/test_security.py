@@ -736,6 +736,39 @@ class AssetTests(unittest.TestCase):
         self.assertEqual(picked[0][1], "p1")
 
 
+class ContentBasisTests(unittest.TestCase):
+    REPORT = {"scores": [{"key": "technical", "area": "Technical SEO"}],
+              "weaknesses": [{"title": "x", "severity": "low", "area_key": "technical"}]}
+
+    @staticmethod
+    def crawl(*words):
+        return {"pages": [{"title": "t", "word_count": w} for w in words]}
+
+    def test_thresholds(self):
+        cb = render_report.content_basis
+        self.assertFalse(cb(self.crawl(52))["sufficient"])            # one-page stub
+        self.assertTrue(cb(self.crawl(800))["sufficient"])            # real one-page landing
+        self.assertFalse(cb(self.crawl(40, 30, 50, 900))["sufficient"])  # mostly empty pages
+        self.assertTrue(cb(self.crawl(600, 700, 90, 1200))["sufficient"])
+        self.assertFalse(cb({"pages": []})["sufficient"])
+
+    def test_readiness_not_scored_when_thin(self):
+        thin = dict(self.REPORT, _content_basis=render_report.content_basis(self.crawl(52)))
+        _, readiness, warnings = render_report.compute_scores(thin)
+        self.assertIsNone(readiness)
+        self.assertTrue(any("not scored" in w for w in warnings))
+        body, _ = render_report.render_html(thin, render_report.DEFAULT_LABELS)
+        self.assertIn("52 words on 1 page", body)
+        self.assertIn(render_report.DEFAULT_LABELS["scores_caveat"], body)
+        md = render_report.render_md(thin, render_report.DEFAULT_LABELS)
+        self.assertIn(render_report.DEFAULT_LABELS["not_scored"], md)
+
+    def test_readiness_scored_without_crawl_or_when_enough(self):
+        self.assertEqual(render_report.compute_scores(self.REPORT)[1], 98)
+        ok = dict(self.REPORT, _content_basis=render_report.content_basis(self.crawl(900)))
+        self.assertEqual(render_report.compute_scores(ok)[1], 98)
+
+
 class HreflangCodeAndCanonicalTests(unittest.TestCase):
     key = staticmethod(lambda u: (u or "").rstrip("/").lower())
     same = staticmethod(lambda u: "example.com" in u)

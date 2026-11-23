@@ -46,6 +46,10 @@ DEFAULT_LABELS = {
     "visibility_hint": "How often AI and search answers name or cite the business for non-brand queries.",
     "visibility_basis": "{hits} of {total} non-brand checks mention or cite the business",
     "not_measured": "not measured",
+    "not_scored": "not scored",
+    "readiness_insufficient": "Not scored: the crawler saw only {words} words on {pages} page(s). Area scores are 100 minus the problems found, so a nearly empty site would look good. Check that the URL is the real site and that its content is not loaded only by JavaScript.",
+    "scores_caveat": "Too little content was crawled for these numbers to mean much; read the deductions, not the totals.",
+    "content_too_thin": "too little content to score",
     "deductions": "Deductions",
     "no_deductions": "No issues found in this area",
     "entity": "Entity and listings",
@@ -203,6 +207,9 @@ BENCH_METRICS = ("pages_analyzed", "maps_rating", "maps_reviews", "ai_mentions",
                  "profile_links", "sanity_flags")
 BENCH_EXTRA = ("maps_rating", "maps_reviews", "ai_mentions")  # filled in by the agent via benchmark_extra
 MAX_SIDECAR_BYTES = 8 * 1024 * 1024
+MAX_CRAWL_BYTES = 64 * 1024 * 1024
+MIN_TOTAL_WORDS = 300    # below this the site has too little text to score
+MIN_MEDIAN_WORDS = 100   # with 3+ pages: most pages nearly empty (stubs or JavaScript-only content)
 SIDECARS = (("benchmark", "benchmark.json"), ("changes", "changes.json"), ("gaps", "gaps.json"))
 CSV_FORMULA_START = ("=", "+", "-", "@", "\t", "\r", "\uff1d", "\uff0b", "\uff0d", "\uff20")
 URL_RX = re.compile(r"^https?://[^\s<>\"'`\\]+$", re.I)
@@ -279,6 +286,16 @@ def weakness_matches(w: dict, sc: dict) -> bool:
     return bool(area) and s(w.get("area")).strip() == area
 
 
+def content_basis(crawl: dict) -> dict:
+    """How much text the crawl saw. Too little makes deduction-based scores meaningless."""
+    pages = [p for p in as_list(crawl.get("pages")) if isinstance(p, dict) and "title" in p]
+    words = sorted(max(0, int(p.get("word_count") or 0)) for p in pages)
+    total = sum(words)
+    median = words[len(words) // 2] if words else 0
+    sufficient = total >= MIN_TOTAL_WORDS and not (len(words) >= 3 and median < MIN_MEDIAN_WORDS)
+    return {"pages": len(words), "words": total, "median_words": median, "sufficient": sufficient}
+
+
 def compute_scores(d: dict) -> tuple[list[dict], int | None, list[str]]:
     """Area scores from weakness deductions, plus the weighted site-readiness score."""
     weaknesses = [w for w in as_list(d.get("weaknesses")) if isinstance(w, dict)]
@@ -301,6 +318,11 @@ def compute_scores(d: dict) -> tuple[list[dict], int | None, list[str]]:
     if rated:
         total_w = sum(AREA_WEIGHT.get(x["key"], 1.0) for x in rated)
         readiness = half_up(sum(x["score"] * AREA_WEIGHT.get(x["key"], 1.0) for x in rated) / total_w)
+    basis = d.get("_content_basis")
+    if readiness is not None and isinstance(basis, dict) and not basis.get("sufficient", True):
+        warnings.append(f"site readiness not scored: only {basis.get('words')} words on {basis.get('pages')} "
+                        f"page(s) were crawled (need {MIN_TOTAL_WORDS}+ words, median {MIN_MEDIAN_WORDS}+ per page)")
+        readiness = None
     unmatched = [s(w.get("title")) for w in weaknesses
                  if norm_key(w.get("area_key")) not in VISIBILITY_KEYS
                  and not any(weakness_matches(w, x) for x in out)]
@@ -588,9 +610,14 @@ def render_html(d: dict, L: dict) -> str:
     vis = compute_visibility(d)
     head = d.get("headline") if isinstance(d.get("headline"), dict) else {}
     tiles = []
+    basis = d.get("_content_basis") if isinstance(d.get("_content_basis"), dict) else {}
+    thin = bool(scores) and basis.get("sufficient") is False
     if readiness is not None:
         tiles.append(("readiness", readiness, ""))
-    if readiness is not None or vis["total"]:
+    elif thin:
+        tiles.append(("readiness", None, L["readiness_insufficient"].replace("{words}", str(basis.get("words", 0)))
+                      .replace("{pages}", str(basis.get("pages", 0)))))
+    if readiness is not None or thin or vis["total"]:
         basis = (L["visibility_basis"].replace("{hits}", str(vis["hits"])).replace("{total}", str(vis["total"]))
                  if vis["total"] else L["not_measured"])
         tiles.append(("visibility", vis["score"], basis))
@@ -625,7 +652,10 @@ def render_html(d: dict, L: dict) -> str:
         out.append("</div>")
 
     if scores:
-        out.append(f'<h2>{e(L["scores"])}</h2><div class="scores">')
+        out.append(f'<h2>{e(L["scores"])}</h2>')
+        if thin:
+            out.append(f'<p class="muted">{e(L["scores_caveat"])}</p>')
+        out.append('<div class="scores">')
         for sc in scores:
             if sc["key"] in VISIBILITY_KEYS:
                 continue  # shown as the "Real visibility" headline
@@ -888,8 +918,11 @@ def render_md(d: dict, L: dict) -> str:
         lines.append(f'- {md_text(L["platform"])}: {md_text(site["cms"])}')
     _, readiness, _ = compute_scores(d)
     vis = compute_visibility(d)
+    basis = d.get("_content_basis") if isinstance(d.get("_content_basis"), dict) else {}
     if readiness is not None:
         lines.append(f'- {md_text(L["readiness"])}: {readiness}/100')
+    elif basis.get("sufficient") is False and d.get("scores"):
+        lines.append(f'- {md_text(L["readiness"])}: {md_text(L["not_scored"])} ({md_text(L["content_too_thin"])})')
     if readiness is not None or vis["total"]:
         lines.append(f'- {md_text(L["visibility"])}: '
                      + (f'{vis["score"]}/100' if vis["score"] is not None else md_text(L["not_measured"])))
@@ -1024,6 +1057,12 @@ def main() -> int:
             side = json.load(fh)
         if isinstance(side, dict):
             d[key] = side
+    crawl_path = os.path.join(os.path.dirname(os.path.abspath(args.data)), "crawl.json")
+    if os.path.isfile(crawl_path) and os.path.getsize(crawl_path) <= MAX_CRAWL_BYTES:
+        with open(crawl_path, encoding="utf-8") as fh:
+            crawl = json.load(fh)
+        if isinstance(crawl, dict):
+            d["_content_basis"] = content_basis(crawl)  # internal: decides whether readiness is scored
     L = dict(DEFAULT_LABELS)
     for k, v in (d.get("labels") or {}).items():
         if k in L and isinstance(v, str) and v.strip():
