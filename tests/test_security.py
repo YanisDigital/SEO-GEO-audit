@@ -736,5 +736,77 @@ class AssetTests(unittest.TestCase):
         self.assertEqual(picked[0][1], "p1")
 
 
+class HreflangCodeAndCanonicalTests(unittest.TestCase):
+    key = staticmethod(lambda u: (u or "").rstrip("/").lower())
+    same = staticmethod(lambda u: "example.com" in u)
+
+    def test_iso_codes(self):
+        ok = ("en", "en-GB", "uk", "uk-UA", "zh-Hant-TW", "es-419", "x-default", "fil")
+        for code in ok:
+            with self.subTest(code=code):
+                self.assertIsNone(extras.hreflang_code_problem(code))
+        self.assertIn("GB", extras.hreflang_code_problem("en-UK"))
+        self.assertIn("'uk'", extras.hreflang_code_problem("ua"))
+        self.assertIsNotNone(extras.hreflang_code_problem("english"))
+
+    def test_canonical_conflicts(self):
+        en, uk, de_at, de_de = ("https://example.com/en/", "https://example.com/uk/",
+                                "https://example.com/de-at/", "https://example.com/de-de/")
+        alts = [("en", en), ("uk", uk), ("de-AT", de_at), ("de-DE", de_de)]
+
+        def page(url, canon, lang):
+            return {"url": url, "final_url": url, "title": "t", "status": 200, "lang": lang, "canonical": [canon],
+                    "hreflang": [{"hreflang": c, "href": h} for c, h in alts]}
+        pages = [page(en, en, "en"), page(uk, en, "uk"), page(de_at, de_de, "de"), page(de_de, de_de, "de"),
+                 page("https://example.com/x/", "https://example.com/other/", "en")]
+        counts = extras.hreflang_check(pages, {}, self.key, self.same)["issue_counts"]
+        self.assertEqual(counts.get("cross_locale_canonical"), 1)      # uk -> en
+        self.assertEqual(counts.get("canonical_not_in_set"), 1)        # /x/ -> /other/
+        # de-AT -> de-DE (same language) is an allowed regional consolidation
+
+
+class ArchitectureTests(unittest.TestCase):
+    def test_depth_orphans_and_aliases(self):
+        edges = {"h": ["a", "b-old"], "a": ["c"], "b": ["h"], "c": ["d"], "d": ["e"]}
+        arch = extras.architecture("h", edges, {"b-old": "b"}, {"h", "a", "b", "c", "d"},
+                                   ["h", "a", "b", "c", "d", "e", "lonely"])
+        self.assertEqual(arch["depth_distribution"], {"0": 1, "1": 2, "2": 1, "3": 1, "4": 1})
+        self.assertEqual(arch["pages_deeper_than_3_clicks"], ["e"])
+        self.assertEqual(arch["sitemap_urls_not_linked"], ["lonely"])
+        self.assertEqual(arch["crawled_not_reachable_from_home"], [])
+        self.assertEqual(arch["sitemap_coverage"], 0.71)
+
+    def test_cannibalization(self):
+        def p(url, title, h1=""):
+            return {"url": url, "title": title, "headings": [{"level": 1, "text": h1}] if h1 else []}
+        pages = [p("/a", "Braces cost in Los Angeles | Clinic"), p("/b", "Cost of braces Los Angeles | Clinic"),
+                 p("/c", "Invisalign for teens | Clinic"), p("/d", "Kids orthodontics | Clinic", "Our team"),
+                 p("/e", "Emergency care | Clinic", "Our team")]
+        found = {tuple(x["pages"]): x["reason"] for x in extras.cannibalization(pages)}
+        self.assertEqual(found, {("/a", "/b"): "similar titles", ("/d", "/e"): "same H1"})
+
+
+class ProposalTests(unittest.TestCase):
+    D = {"tasks": [{"id": "T2", "title": "Rewrite titles", "wave": "now",
+                    "proposals": [{"page": "https://example.com/a", "current": "Home | A | B",
+                                   "proposed": "=cmd() <b>x</b>", "reason": "pipe | inside"}]}]}
+
+    def test_markdown_table_cells_are_escaped(self):
+        md = render_report.render_md(self.D, render_report.DEFAULT_LABELS)
+        row = next(line for line in md.splitlines() if "example.com/a" in line)
+        self.assertEqual(row.count("|") - row.count("\\|"), 5)       # 4 cells, pipes inside escaped
+        self.assertNotIn("<b>", md)
+
+    def test_html_and_csv(self):
+        body, _ = render_report.render_html(self.D, render_report.DEFAULT_LABELS)
+        self.assertNotIn("<b>x", body)
+        import csv
+        import io
+        rows = list(csv.reader(io.StringIO(render_report.render_proposals_csv(self.D, render_report.DEFAULT_LABELS))))
+        self.assertEqual(rows[1][:4], ["T2", "https://example.com/a", "Home | A | B", "'=cmd() <b>x</b>"])
+        self.assertEqual(rows[1][5], "")
+        self.assertIsNone(render_report.render_proposals_csv({"tasks": [{"id": "T1"}]}, render_report.DEFAULT_LABELS))
+
+
 if __name__ == "__main__":
     unittest.main()

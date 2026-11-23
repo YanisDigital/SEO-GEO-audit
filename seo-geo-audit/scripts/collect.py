@@ -40,7 +40,7 @@ from netsafe import (ROBOTS_TOKEN, USER_AGENT, SafeFetcher, UnsafeURLError,  # n
                      decode_body, normalize_input_url, resolve_public, strip_url,
                      validate_url)
 
-VERSION = "0.5.0"
+VERSION = "0.6.0"
 HARD_MAX_PAGES = 200
 MAX_UNPARSED_TAIL = 8192
 HARD_MAX_LINK_CHECKS = 300
@@ -1318,6 +1318,8 @@ def main() -> int:
     for l in home_links:
         link_source.setdefault(l, start_url)
     home_page["is_start_url"] = True
+    edges: dict[str, list[str]] = {clean_url(final_home): home_links}
+    aliases: dict[str, str] = {clean_url(start_url): clean_url(final_home)}
     pages.append(home_page)
     all_internal.extend(home_links)
     fetched = {clean_url(start_url), clean_url(final_home)}
@@ -1348,6 +1350,9 @@ def main() -> int:
                 continue
             fetched.add(fu)
             page, links = analyze_page(u, res, base_host)
+            edges[fu] = links
+            if fu != u:
+                aliases[u] = fu
             pages.append(page)
             all_internal.extend(links)
             for l in links:
@@ -1452,6 +1457,10 @@ def main() -> int:
             "images_missing_alt_total": sum(p["images"]["missing_alt"] for p in real_pages),
             "images_total": sum(p["images"]["count"] for p in real_pages),
             "entity": entity,
+            "architecture": extras.architecture(clean_url(final_home), edges, aliases,
+                                                {clean_url(p.get("final_url") or p["url"]) for p in real_pages},
+                                                sitemap_urls),
+            "cannibalization_candidates": extras.cannibalization(real_pages),
             "analytics": extras.summarize_analytics(real_pages),
             "forms": extras.summarize_forms(real_pages),
             "contact_links": extras.summarize_contacts(real_pages),

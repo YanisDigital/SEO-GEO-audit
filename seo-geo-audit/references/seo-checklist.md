@@ -34,9 +34,11 @@ observation). Skip checks that do not apply to the business type.
 | Duplicate URLs | query/trailing-slash variants in link lists | the same page reachable at several URLs without canonical |
 
 ## 2. Site architecture and internal linking
-- Key commercial pages reachable from the homepage within 1-2 clicks (look at homepage `links.internal_unique` and nav headings).
+- Key commercial pages reachable from the homepage within 1-2 clicks, everything important within 3 (`architecture.depth_distribution`, `pages_deeper_than_3_clicks`).
+- Weakly linked pages (`weakly_linked_crawled_pages`): a money page with one internal link gets little weight; link it from the strongest related pages with descriptive anchors.
 - `links.empty_anchor_text` (icon-only links without accessible text) and `javascript_links` (not crawlable).
-- Orphan suspicion: sitemap URLs never linked from crawled pages.
+- Orphan suspicion: `sitemap_urls_not_linked`. Reliable only when `sitemap_coverage` is high; otherwise confirm with a `site:` search or a deeper crawl.
+- Cannibalization: `cannibalization_candidates` (near-identical titles or the same H1). Confirm the two pages really target one query and one intent; then pick one owner page, merge the useful parts of the other and redirect it, or give each a distinct intent.
 - Breadcrumbs (visible and `BreadcrumbList` schema) on deep sites.
 - Pagination and faceted navigation: query-string pages competing with clean category URLs.
 
@@ -55,6 +57,28 @@ observation). Skip checks that do not apply to the business type.
 Character counts are guidance, not law: Google rewrites titles and snippets.
 Flag a length issue only when it truncates the key message or is clearly
 uninformative.
+
+**Titles that win the query and the click.** Look at what already ranks for the
+page's main query (format, expected words such as "price", "near me", a year),
+then write: main query first, then the reason to click (scope, outcome, number,
+format), brand last unless it is well known; about 50-60 characters with the
+key words in the first 50. Match the pattern to the page type:
+
+| Page type | Pattern |
+|---|---|
+| Service / product | `[Service] in [City] for [Audience] \| [Brand]` |
+| Price page | `[Service] Prices in [City]: [what is included] \| [Brand]` |
+| Comparison | `[A] vs [B]: [the deciding difference]` |
+| How-to / guide | `How to [Task]` or `[Topic]: [Audience] Guide` |
+| Location page | `[Service] in [Area] \| [Brand] ([landmark or district])` |
+
+Google tends to replace a title that is much longer than the display, stuffed
+with keywords or repeated boilerplate ("Home | Brand | Brand"), out of line
+with the H1, or generic ("Home", "Services"). Keep title, H1, slug and
+description about the same topic. Use a year, "free" or a number only when the
+page delivers it. For bulk rewrites, give the changes as `proposals` on the
+task (page, current, proposed, reason): the renderer turns them into a table
+and `proposals.csv` the owner can approve line by line.
 
 ## 4. Content quality and E-E-A-T
 - Thin pages: `pages_thin_content_lt_300_words`. A thin contact page is fine; a thin service or category page is not.
@@ -90,7 +114,7 @@ Thresholds (75th percentile of real users, the CrUX "field" data in `psi.json`):
 - Tap targets, font sizes, intrusive interstitials (pop-ups covering content on mobile) — check visually.
 
 ## 8. International and local
-- hreflang: reciprocal, includes self-reference and `x-default`, valid codes (`uk`, not `ua`), URLs return 200 and are canonical.
+- hreflang (`hreflang_check`): reciprocal, includes self-reference, valid ISO codes (`uk` for Ukrainian, not `ua`; `en-GB`, never `en-UK`), alternates return 200, are indexable and self-canonical. Each locale canonicalises to itself: a canonical pointing to another language (`cross_locale_canonical`) or outside the hreflang set (`canonical_not_in_set`) makes Google ignore the annotations. Regional duplicates in one language (de-DE and de-AT with the same text) may share a preferred canonical. `x-default` is recommended for a fallback page, not required: its absence alone is not an error. One broken pair does not invalidate the other pairs.
 - Local business: NAP (name, address, phone) consistent on site and in schema; `tel:` links (`links.tel_links`); embedded map; city/area pages for real service areas only; reviews. Google Business Profile cannot be verified from the site — recommend checking it and list it as a limitation.
 
 ## 9. Market-specific notes

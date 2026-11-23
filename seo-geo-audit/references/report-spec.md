@@ -81,6 +81,7 @@ that is what practitioners use.
      "title": "imperative, specific", "why": "impact + evidence",
      "evidence": ["page or element, what is wrong, steps to reproduce"], "impact": "what it costs the business",
      "fixes": ["weakness-key"], "steps": ["..."],
+     "proposals": [{"page": "https://...", "current": "...", "proposed": "...", "reason": "..."}],
      "code": "optional snippet", "acceptance": ["verifiable check"],
      "effort": "S|M|L", "owner": "developer|content|marketing|owner", "pages": ["https://..."]}
   ],
@@ -177,6 +178,7 @@ Bands: 80-100 good, 50-79 needs work, < 50 poor.
 - **No invented numbers.** Do not estimate traffic, rankings, revenue or
   "+30% visibility". You have no data for that. Describe impact qualitatively
   ("can remove the page from AI answers", "Google may choose the wrong URL").
+- **Plain words.** No filler, hype or stock phrases ("in today's digital landscape", "unlock", "seamless", "robust"), no strings of dashes for effect, no vague intensifiers. Say the finding, the evidence and the fix.
 - **Business language first, jargon second.** The reader may be the business
   owner. One sentence of "why it matters", then the technical detail.
 - **Strengths are real.** 3-8 items that the client should keep or build on.
@@ -204,6 +206,19 @@ Each task must be executable by someone who did not read the rest of the report:
 concrete pages, concrete change, a code or text example when it helps, and
 acceptance criteria that can be checked (a tool, a URL, a visible result).
 Usually 8-20 tasks total; the "now" wave should have at least 3.
+
+**Tasks that create a page** (price page, FAQ, location or service page) use these
+acceptance criteria, adapted to the page, so it does not launch as an orphan:
+linked from at least 3 relevant existing pages with descriptive anchors; unique
+title and description for its main query; one H1 in line with the title;
+self-referencing canonical; listed in the XML sitemap; structured data where the
+page type supports it; main content present in the server HTML; indexable (no
+`noindex`, not blocked in robots.txt); a clear call or booking path.
+
+**Bulk text changes** (titles, descriptions, H1s) go in `proposals`: one row per
+page with the current text, the proposed text and the reason. The renderer
+shows them as a table and writes `proposals.csv` with an empty "Approved"
+column for the owner.
 
 **Example task** (in English here; write yours in the report language):
 

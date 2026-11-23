@@ -24,6 +24,10 @@ Plumbers, salons, studios, repair, schools, agencies with walk-in clients.
 - **Schema:** `LocalBusiness` subtype (`HomeAndConstructionBusiness`, `BeautySalon`…), `address`, `geo`, `openingHoursSpecification`, `areaServed`, `sameAs`; `Service` for main services.
 - **Live-check queries:** "<service> <area>", "best <service> near <landmark>", "<service> price <city>", "emergency <service> <city>" when relevant.
 - **Severity shifts:** missing or wrong Maps card → high; templated area pages → medium (risk of thin/doorway content).
+- **Model the real business first.** A storefront shows its address. A service-area business (plumber, mobile locksmith) has one real base and hides a home address; it gets one profile, not one per town, and area pages describe real coverage without implying an office. Never recommend fake branches, virtual-office profiles or publishing a private address to complete a listing.
+- **Reviews:** recommend asking every customer neutrally with the location's review link. No incentives, no asking only happy customers ("review gating"), no prescribed wording: these break Google's review policies. Reply to reviews without exposing customer details.
+- **Review stars:** `aggregateRating` markup for the business's own testimonials does not earn stars in Google results for LocalBusiness/Organization; don't promise it, and never copy the Maps rating into markup.
+- **Map-pack observations** depend on where the search is made from. Record the query, date and search location with every observation, and don't extrapolate one search to the whole city.
 
 ## 2. Medical, dental, health (YMYL)
 Clinics, dentists, orthodontists, therapists, pharmacies, wellness.

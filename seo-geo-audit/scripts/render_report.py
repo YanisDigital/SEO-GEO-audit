@@ -127,6 +127,11 @@ DEFAULT_LABELS = {
     "competitor_topics": "Competitor topics the site doesn't cover",
     "topic": "Topic",
     "gaps_note": "Lexical matching of word stems against titles, headings, URLs and text of the crawled pages: a list of leads to review, not a verdict.",
+    "proposals": "Proposed changes",
+    "current": "Current",
+    "proposed": "Proposed",
+    "reason": "Reason",
+    "approved": "Approved",
     "status": "Status",
     "status_note": "Status note",
     "status_open": "open",
@@ -406,6 +411,11 @@ def task_status(task: dict, changes) -> tuple[str | None, str]:
                     and titles_similar(x.get("title"), task.get("title")) and norm_key(x.get("status")) in STATUS_KEYS:
                 return norm_key(x.get("status")), s(x.get("note"))
     return None, ""
+
+
+def task_proposals(task: dict) -> list[dict]:
+    """Line-by-line changes for bulk title/description/heading tasks: page, current, proposed, reason."""
+    return [x for x in as_list(task.get("proposals")) if isinstance(x, dict)][:200]
 
 
 def status_tag(status: str | None, L) -> str:
@@ -698,6 +708,15 @@ def render_html(d: dict, L: dict) -> str:
                     out.append(f'<h4>{e(L["steps"])}</h4><ol>' + "".join(f"<li>{e(x)}</li>" for x in steps) + "</ol>")
                 if t.get("code"):
                     out.append(f'<h4>{e(L["code"])}</h4><pre><code>{e(t["code"])}</code></pre>')
+                props = task_proposals(t)
+                if props:
+                    out.append(f'<h4>{e(L["proposals"])}</h4><div class="table-wrap"><table><thead><tr>'
+                               f'<th>{e(L["pages"])}</th><th>{e(L["current"])}</th><th>{e(L["proposed"])}</th>'
+                               f'<th>{e(L["reason"])}</th></tr></thead><tbody>')
+                    for x in props[:60]:
+                        out.append(f'<tr><td>{link(x.get("page"))}</td><td>{e(x.get("current"))}</td>'
+                                   f'<td>{e(x.get("proposed"))}</td><td>{e(x.get("reason"))}</td></tr>')
+                    out.append("</tbody></table></div>")
                 acc = as_list(t.get("acceptance"))
                 if acc:
                     out.append(f'<h4>{e(L["acceptance"])}</h4><ul>' + "".join(f"<li>{e(x)}</li>" for x in acc) + "</ul>")
@@ -842,6 +861,11 @@ def md_text(value) -> str:
     return "".join(parts)
 
 
+def md_cell(value) -> str:
+    """md_text for a GFM table cell: a pipe would end the cell, so it is escaped (also inside code spans)."""
+    return md_text(value).replace("|", "\\|")
+
+
 def md_url(u) -> str:
     u = s(u).strip()
     return f"<{u}>" if URL_RX.match(u) else md_text(u)
@@ -905,6 +929,14 @@ def render_md(d: dict, L: dict) -> str:
                 lines.append("")
             if t.get("code"):
                 lines += [f'**{md_text(L["code"])}:**', "", fence(s(t["code"])), ""]
+            props = task_proposals(t)
+            if props:
+                lines += [f'**{md_text(L["proposals"])}:**', "",
+                          f'| {md_cell(L["pages"])} | {md_cell(L["current"])} | {md_cell(L["proposed"])} | '
+                          f'{md_cell(L["reason"])} |', "|---|---|---|---|"]
+                lines += [f'| {md_cell(x.get("page"))} | {md_cell(x.get("current"))} | {md_cell(x.get("proposed"))} | '
+                          f'{md_cell(x.get("reason"))} |' for x in props]
+                lines.append("")
             acc = as_list(t.get("acceptance"))
             if acc:
                 lines.append(f'**{md_text(L["acceptance"])}:**')
@@ -953,6 +985,20 @@ def render_csv(d: dict, L: dict) -> str:
                "\n".join(f"\u2022 {s(x)}" for x in as_list(t.get("acceptance"))),
                t.get("effort"), t.get("owner"), L["status_" + (st_key or "open")], st_note]
         w.writerow([csv_cell(c) for c in row])
+    return buf.getvalue()
+
+
+def render_proposals_csv(d: dict, L: dict) -> str | None:
+    """proposals.csv: one row per proposed change, with an empty column for the owner's approval."""
+    rows = [(t, x) for t in as_list(d.get("tasks")) if isinstance(t, dict) for x in task_proposals(t)]
+    if not rows:
+        return None
+    buf = io.StringIO()
+    w = csv.writer(buf, quoting=csv.QUOTE_ALL, lineterminator="\r\n")
+    w.writerow([csv_cell(c) for c in ("ID", L["pages"], L["current"], L["proposed"], L["reason"], L["approved"])])
+    for t, x in rows:
+        w.writerow([csv_cell(c) for c in (t.get("id"), x.get("page"), x.get("current"), x.get("proposed"),
+                                          x.get("reason"), "")])
     return buf.getvalue()
 
 
@@ -1007,6 +1053,12 @@ def main() -> int:
         fh.write(render_md(d, L))
     with open(csv_path, "w", encoding="utf-8-sig", newline="") as fh:  # BOM so Excel reads UTF-8
         fh.write(render_csv(d, L))
+    proposals = render_proposals_csv(d, L)
+    if proposals:
+        prop_path = os.path.join(args.out_dir, "proposals.csv")
+        with open(prop_path, "w", encoding="utf-8-sig", newline="") as fh:
+            fh.write(proposals)
+        print(f"Wrote {prop_path}")
     for warning in compute_scores(d)[2]:
         print(f"WARNING: {warning}", file=sys.stderr)
     if compute_visibility(d)["score"] is None:

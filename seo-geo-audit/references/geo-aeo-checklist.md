@@ -33,7 +33,7 @@ Three kinds of bots exist; treat them differently:
 | User-triggered fetch | ChatGPT-User, Claude-User, Perplexity-User, MistralAI-User | the assistant cannot open the page when a user asks about it or pastes the link. |
 
 - Google AI Overviews / AI Mode use regular Googlebot. `Google-Extended` does **not** remove a site from AI Overviews.
-- Copilot relies on the Bing index → Bingbot access and Bing Webmaster Tools matter.
+- Copilot relies on the Bing index, and ChatGPT search draws on it in part, so Bingbot access matters. A cheap task for almost every site: verify it in Bing Webmaster Tools (import from Google Search Console works), submit the sitemap, and enable IndexNow (Bing, Yandex and others; not Google) so new and changed pages are picked up quickly. Many CMSs and CDNs have an IndexNow switch.
 - Flag as **high**: search or user-fetch bots blocked when the business wants AI visibility. Flag training-bot blocks only as an informational note with the trade-off.
 - Also check CDN/WAF bot protection (Cloudflare "Block AI bots", bot-fight mode): robots.txt may allow a bot that the firewall still blocks. This cannot be verified from outside; list it as something for the client to check.
 

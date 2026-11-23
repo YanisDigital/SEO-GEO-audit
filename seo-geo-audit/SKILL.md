@@ -124,6 +124,10 @@ Besides the pages, the collector records (see crawl.json):
   first pages (HEAD requests).
 - `link_check` (internal, with the page each link was found on) and `external_link_check`
   (statuses 401/403/429/999 are bot blocking, not broken links).
+- `site_summary.architecture`: click depth from the home page, weakly linked pages and
+  sitemap URLs nothing links to (orphan suspects; trust them only with high
+  `sitemap_coverage`), and `site_summary.cannibalization_candidates`: page pairs with
+  near-identical titles or the same H1 that may compete for one query.
 For a competitor crawl use `--light` (no extra checks).
 
 **Work in parallel.** Start the collector as a background command, and while it
@@ -172,7 +176,13 @@ Open the homepage and 1-2 key pages:
   is invisible to most AI crawlers. Confirm this here.
 - Look at mobile layout, intrusive pop-ups, visible trust signals (reviews,
   address, team, certificates), and how clear the offer is above the fold.
-If no browser is available, skip this and note it in limitations.
+- Structured data added by JavaScript (some CMS plugins, tag managers) is not in
+  the raw HTML the collector reads. Before you report missing or incomplete
+  schema, count it in the rendered page:
+  `document.querySelectorAll('script[type="application/ld+json"]').length`,
+  or use Google's Rich Results Test, which renders JavaScript.
+If no browser is available, skip this and note it in limitations (and word any
+"no schema" finding as "none in the server HTML").
 
 ### 4. GEO/AEO live checks (if a browser tool is available)
 Follow the protocol in `references/geo-aeo-checklist.md` §6: 6-10 queries

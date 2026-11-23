@@ -254,6 +254,39 @@ def summarize_contacts(real_pages: list) -> dict:
 # --------------------------------------------------------------------------- hreflang
 
 HREFLANG_RX = re.compile(r"^(?:x-default|[a-z]{2,3}(?:-[a-z]{4})?(?:-(?:[a-z]{2}|\d{3}))?)$", re.I)
+# ISO 639-1 (plus deprecated aliases Google still reads) and ISO 3166-1 alpha-2 (plus XK). Three-letter
+# language codes and numeric regions (es-419) are accepted without a list check.
+ISO_639_1 = set("""aa ab ae af ak am an ar as av ay az ba be bg bi bm bn bo br bs ca ce ch co cr cs cu cv cy da
+de dv dz ee el en eo es et eu fa ff fi fj fo fr fy ga gd gl gn gu gv ha he hi ho hr ht hu hy hz ia id ie ig ii ik
+io is it iu ja jv ka kg ki kj kk kl km kn ko kr ks ku kv kw ky la lb lg li ln lo lt lu lv mg mh mi mk ml mn mr ms
+mt my na nb nd ne ng nl nn no nr nv ny oc oj om or os pa pi pl ps pt qu rm rn ro ru rw sa sc sd se sg si sk sl sm
+sn so sq sr ss st su sv sw ta te tg th ti tk tl tn to tr ts tt tw ty ug uk ur uz ve vi vo wa wo xh yi yo za zh zu
+in iw ji jw mo sh""".split())
+ISO_3166_1 = set("""ad ae af ag ai al am ao aq ar as at au aw ax az ba bb bd be bf bg bh bi bj bl bm bn bo bq br
+bs bt bv bw by bz ca cc cd cf cg ch ci ck cl cm cn co cr cu cv cw cx cy cz de dj dk dm do dz ec ee eg eh er es et
+fi fj fk fm fo fr ga gb gd ge gf gg gh gi gl gm gn gp gq gr gs gt gu gw gy hk hm hn hr ht hu id ie il im in io iq
+ir is it je jm jo jp ke kg kh ki km kn kp kr kw ky kz la lb lc li lk lr ls lt lu lv ly ma mc md me mf mg mh mk ml
+mm mn mo mp mq mr ms mt mu mv mw mx my mz na nc ne nf ng ni nl no np nr nu nz om pa pe pf pg ph pk pl pm pn pr ps
+pt pw py qa re ro rs ru rw sa sb sc sd se sg sh si sj sk sl sm sn so sr ss st sv sx sy sz tc td tf tg th tj tk tl
+tm tn to tr tt tv tw tz ua ug um us uy uz va vc ve vg vi vn vu wf ws xk ye yt za zm zw""".split())
+COMMON_MISTAKES = {"uk": "gb", "en-uk": "en-GB"}
+
+
+def hreflang_code_problem(code: str) -> str | None:
+    """None when the code is valid, else a short reason (with the usual fix)."""
+    code = (code or "").strip()
+    if not HREFLANG_RX.match(code):
+        return "not a language[-region] code"
+    if code.lower() == "x-default":
+        return None
+    parts = code.lower().split("-")
+    lang = parts[0]
+    if len(lang) == 2 and lang not in ISO_639_1:
+        return "unknown language" + (" (Ukrainian is 'uk', not 'ua')" if lang == "ua" else "")
+    region = parts[-1] if len(parts) > 1 and len(parts[-1]) == 2 else None
+    if region and region not in ISO_3166_1:
+        return "unknown region" + (" (the United Kingdom is 'GB', e.g. en-GB)" if region == "uk" else "")
+    return None
 
 
 def hreflang_missing(pages: list, key, same_site_fn, limit: int) -> list[str]:
@@ -307,8 +340,9 @@ def hreflang_check(pages: list, extra: dict, key, same_site_fn, fetched: int = 0
         self_entry = None
         for e in entries:
             code, href = (e.get("hreflang") or "").strip(), e.get("href")
-            if not HREFLANG_RX.match(code or ""):
-                add("invalid_code", url, None, f"'{code}'")
+            problem = hreflang_code_problem(code)
+            if problem:
+                add("invalid_code", url, href, f"'{code}': {problem}")
                 continue
             codes.add(code.lower())
             if code.lower() == "x-default":
@@ -318,6 +352,17 @@ def hreflang_check(pages: list, extra: dict, key, same_site_fn, fetched: int = 0
             seen.setdefault(code.lower(), key(href or ""))
             if href and key(href) == me:
                 self_entry = code
+        canon = (p.get("canonical") or [None])[0]
+        if canon and key(canon) != me:
+            by_url = {key(e.get("href") or ""): (e.get("hreflang") or "") for e in entries}
+            target_code = by_url.get(key(canon))
+            if target_code is None:
+                add("canonical_not_in_set", url, canon, "its canonical is not among its hreflang alternates, so "
+                                                        "Google ignores the annotations")
+            elif self_entry and _lang_primary(target_code) != _lang_primary(self_entry) \
+                    and target_code.lower() != "x-default":
+                add("cross_locale_canonical", url, canon, f"the '{self_entry}' page canonicalises to the "
+                                                          f"'{target_code}' version, which hides it from search")
         if self_entry is None:
             add("missing_self_reference", url, None, "the page does not list itself among its alternates")
         elif p.get("lang") and self_entry.lower() != "x-default" \
@@ -466,4 +511,82 @@ def pick_external(pages: list, limit: int, per_host: int = 2) -> list[tuple[str,
         for items in by_host.values():
             if rnd < len(items) and len(out) < limit:
                 out.append(items[rnd])
+    return out
+
+
+# --------------------------------------------------------------------------- site structure
+
+def architecture(home: str, edges: dict, aliases: dict, crawled: set, sitemap: list, deep_after: int = 3) -> dict:
+    """Click depth from the home page over the crawled link graph, weakly linked pages and orphan suspects.
+
+    edges: crawled page key -> internal link keys found on it. aliases: requested key -> final key
+    (redirects). Depth is exact only inside the crawled part of the site; links to pages that were not
+    crawled get a depth but contribute no links of their own.
+    """
+    def resolve(k):
+        return aliases.get(k, k)
+
+    graph = {resolve(src): {resolve(d) for d in dsts} for src, dsts in edges.items()}
+    home = resolve(home)
+    depth = {home: 0}
+    queue = [home]
+    for node in queue:  # BFS; the list grows while iterating
+        for nxt in sorted(graph.get(node, ())):
+            if nxt not in depth:
+                depth[nxt] = depth[node] + 1
+                queue.append(nxt)
+    inlinks = Counter()
+    for src, dsts in graph.items():
+        for d in dsts:
+            if d != src:
+                inlinks[d] += 1
+    crawled_r = {resolve(k) for k in crawled}
+    sitemap_r = list(dict.fromkeys(resolve(k) for k in sitemap))
+    coverage = len(crawled_r & set(sitemap_r)) / len(sitemap_r) if sitemap_r else None
+    return {
+        "depth_distribution": {str(k): v for k, v in sorted(Counter(depth.values()).items())},
+        "pages_deeper_than_3_clicks": [k for k, d in sorted(depth.items(), key=lambda x: -x[1]) if d > deep_after][:20],
+        "crawled_not_reachable_from_home": sorted(k for k in crawled_r if k not in depth)[:20],
+        "weakly_linked_crawled_pages": sorted((k for k in crawled_r if k != home and inlinks.get(k, 0) <= 1),
+                                              key=lambda k: inlinks.get(k, 0))[:20],
+        "sitemap_urls_not_linked": [k for k in sitemap_r if k != home and inlinks.get(k, 0) == 0][:30],
+        "sitemap_coverage": round(coverage, 2) if coverage is not None else None,
+        "note": "Computed from the crawled pages only. With low sitemap_coverage a page may be linked from a page "
+                "the crawl did not reach, so treat sitemap_urls_not_linked as orphan suspects, not proof.",
+    }
+
+
+TITLE_WORD = re.compile(r"[^\W\d_]{3,}", re.UNICODE)
+
+
+def cannibalization(real_pages: list, threshold: float = 0.7) -> list[dict]:
+    """Pairs of pages whose titles (minus words shared by most titles, e.g. the brand) or H1s nearly match:
+    candidates for pages competing for the same query."""
+    rows = []
+    for p in real_pages:
+        words = {w.lower() for w in TITLE_WORD.findall(p.get("title") or "")}
+        h1 = next((h.get("text") for h in p.get("headings", []) if h.get("level") == 1 and h.get("text")), "")
+        rows.append((p.get("final_url") or p.get("url"), p.get("title") or "", words, " ".join(h1.lower().split())))
+    if len(rows) >= 4:
+        df = Counter(w for _, _, words, _ in rows for w in words)
+        common = {w for w, n in df.items() if n > len(rows) / 2}
+        rows = [(u, t, words - common, h1) for u, t, words, h1 in rows]
+    out = []
+    for i in range(len(rows)):
+        for j in range(i + 1, len(rows)):
+            (u1, t1, w1, h1), (u2, t2, w2, h2) = rows[i], rows[j]
+            if u1 == u2:
+                continue
+            reason, score = None, 0.0
+            if len(w1) >= 2 and len(w2) >= 2:
+                score = len(w1 & w2) / len(w1 | w2)
+                if score >= threshold:
+                    reason = "similar titles"
+            if not reason and h1 and h1 == h2:
+                reason, score = "same H1", 1.0
+            if reason:
+                out.append({"pages": [u1, u2], "titles": [t1[:120], t2[:120]], "reason": reason,
+                            "similarity": round(score, 2)})
+                if len(out) >= 15:
+                    return out
     return out
