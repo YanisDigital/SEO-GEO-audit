@@ -93,6 +93,10 @@ This skill reads content from websites you don't control, so it was designed def
 - No access to Google Search Console, analytics, backlink databases or server logs. Recommendations involving them are labelled as such.
 - JavaScript-only content is detected heuristically by the crawler and confirmed in the browser when one is available.
 
+## Acknowledgements
+
+Some ideas in v0.6.0 (a rendered-page check before reporting missing structured data, stricter hreflang and canonical checks, new-page acceptance criteria, title patterns, local service-area and review rules, behaviour evals) came from reading the [`seo-audit` skill](https://github.com/coreyhaines31/marketingskills/tree/main/skills/seo-audit) in coreyhaines31/marketingskills (MIT). No text or code was copied; everything here is written for this skill.
+
 ## License
 
 MIT. See [LICENSE](LICENSE).
