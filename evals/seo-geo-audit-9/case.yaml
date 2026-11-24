@@ -1,0 +1,4 @@
+schema_version: "1.1"
+name: seo-geo-audit-9
+expected_outcome: |
+  Verifies duplicates in the crawl, writes title changes as task proposals so proposals.csv is produced, follows title patterns without false promises.

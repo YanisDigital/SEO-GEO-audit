@@ -1,0 +1,4 @@
+schema_version: "1.1"
+name: seo-geo-audit-6
+expected_outcome: |
+  Crawls the given competitors with --light, builds benchmark.json, uses the SaaS profile, turns competitor advantages into tasks.

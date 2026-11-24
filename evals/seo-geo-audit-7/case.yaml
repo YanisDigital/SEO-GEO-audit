@@ -1,0 +1,4 @@
+schema_version: "1.1"
+name: seo-geo-audit-7
+expected_outcome: |
+  Applies service-area local rules: one real base, hidden home address, honest area pages, neutral review requests; notices that the site is a national brand if relevant.

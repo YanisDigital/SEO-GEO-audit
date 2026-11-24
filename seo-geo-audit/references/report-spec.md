@@ -82,6 +82,7 @@ that is what practitioners use.
      "evidence": ["page or element, what is wrong, steps to reproduce"], "impact": "what it costs the business",
      "fixes": ["weakness-key"], "steps": ["..."],
      "proposals": [{"page": "https://...", "current": "...", "proposed": "...", "reason": "..."}],
+     "creates_page": false,
      "code": "optional snippet", "acceptance": ["verifiable check"],
      "effort": "S|M|L", "owner": "developer|content|marketing|owner", "pages": ["https://..."]}
   ],
@@ -213,8 +214,10 @@ concrete pages, concrete change, a code or text example when it helps, and
 acceptance criteria that can be checked (a tool, a URL, a visible result).
 Usually 8-20 tasks total; the "now" wave should have at least 3.
 
-**Tasks that create a page** (price page, FAQ, location or service page) use these
-acceptance criteria, adapted to the page, so it does not launch as an orphan:
+**Tasks that create a page** (price page, FAQ, location or service page) set
+`"creates_page": true`; the renderer appends this checklist to their acceptance
+criteria (label `new_page_checklist`, translate it), so the page does not launch
+as an orphan. Add page-specific criteria of your own as usual. The checklist:
 linked from at least 3 relevant existing pages with descriptive anchors; unique
 title and description for its main query; one H1 in line with the title;
 self-referencing canonical; listed in the XML sitemap; structured data where the

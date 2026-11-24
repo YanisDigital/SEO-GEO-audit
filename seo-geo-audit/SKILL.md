@@ -110,6 +110,14 @@ only if the user asks for a deeper crawl (hard cap 200) and `--check-links N`
 for a wider link check (cap 300; the full list of internal links needs a
 long run, so ask first). Takes 2-4 minutes.
 
+**One crawl per site.** The audited site gets one collector run, plus single
+re-fetches to verify findings. When a finding really needs more coverage (a
+language version, a subdomain, a section the crawl did not reach), add at most
+one small targeted run (`--light --max-pages 10` from that start URL) and list
+it in `data_sources`. Don't stack crawls to see more pages: rerun once with a
+larger `--max-pages` if the user wants depth. Competitors get one `--light` run
+each. The site owner did not ask for this traffic, so keep it small.
+
 Besides the pages, the collector records (see crawl.json):
 - `site_summary.analytics`: analytics, tag-manager, pixel and consent snippets found in the page
   source, with IDs, pages lacking them, and flags (obsolete Universal Analytics, two GA4 IDs,
@@ -244,7 +252,8 @@ python -I <skill>/scripts/gaps.py <OUT>/crawl.json --keywords <OUT>/keywords.csv
    browser or with a `site:` search, since a topic may live on a page the
    crawl didn't reach (matches marked "URL only" were found by URL, not content).
 3. Turn real gaps into tasks: one task per cluster or page to create or
-   extend, naming the queries it should answer. Write a one-line comment in
+   extend, naming the queries it should answer. Mark tasks that create a new
+   page with `"creates_page": true` (see step 10). Write a one-line comment in
    `gaps_summary`. Never invent search volumes: popularity comes only from the
    tool's export.
 
@@ -274,7 +283,11 @@ or move it to limitations. Do the same for anything that matches a
 ### 10. Write report.json and render
 Follow `references/report-spec.md`: the schema, the reproducible scoring method,
 the writing rules (evidence required, no invented numbers), and the task format.
-Save it as `<OUT>/report.json`, then:
+Every task that creates a page (price page, FAQ, location, service or
+comparison page) gets `"creates_page": true`: the renderer then adds the
+standard new-page checklist (internal links, title, canonical, sitemap,
+indexable...) to its acceptance criteria, so the page does not launch as an
+orphan. Save it as `<OUT>/report.json`, then:
 ```bash
 python -I <skill>/scripts/render_report.py <OUT>/report.json --out-dir <OUT>
 ```

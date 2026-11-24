@@ -1,0 +1,4 @@
+schema_version: "1.1"
+name: seo-geo-audit-4
+expected_outcome: |
+  Uses hreflang_check, treats x-default as recommended, cites URL pairs, does not claim one broken pair invalidates everything.

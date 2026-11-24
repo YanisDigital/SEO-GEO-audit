@@ -736,6 +736,30 @@ class AssetTests(unittest.TestCase):
         self.assertEqual(picked[0][1], "p1")
 
 
+class V062Tests(unittest.TestCase):
+    def test_large_hreflang_sets_are_kept(self):
+        links = "".join(f"<link rel='alternate' hreflang='x{i:03d}' href='https://example.com/l{i}/'>"
+                        for i in range(120))
+        html = ("<html><head><title>t</title>" + links +
+                "<link rel='alternate' hreflang='uk' href='https://example.com/uk/'></head><body></body></html>")
+        page, _ = collect.analyze_page("https://example.com/", HTMLParsingTests.page(html.encode()), "example.com")
+        self.assertEqual(len(page["hreflang"]), 121)
+        self.assertEqual(page["hreflang"][-1]["hreflang"], "uk")   # entries after the 40th survive
+
+    def test_creates_page_adds_checklist_once(self):
+        L = render_report.DEFAULT_LABELS
+        task = {"id": "T1", "title": "Create a price page", "wave": "30d", "creates_page": True,
+                "acceptance": ["Prices in dollars"]}
+        self.assertEqual(render_report.task_acceptance(task, L), ["Prices in dollars", L["new_page_checklist"]])
+        self.assertEqual(render_report.task_acceptance({"acceptance": ["x"]}, L), ["x"])
+        self.assertEqual(render_report.task_acceptance({"creates_page": "yes"}, L), [])   # only a real true
+        d = {"tasks": [task]}
+        self.assertIn("self-referencing canonical", render_report.render_md(d, L))
+        self.assertIn("self-referencing canonical", render_report.render_html(d, L)[0])
+        self.assertIn("self-referencing canonical", render_report.render_csv(d, L))
+        self.assertEqual(render_report.render_md(d, L).count("self-referencing canonical"), 1)
+
+
 class ContentBasisTests(unittest.TestCase):
     REPORT = {"scores": [{"key": "technical", "area": "Technical SEO"}],
               "weaknesses": [{"title": "x", "severity": "low", "area_key": "technical"}]}

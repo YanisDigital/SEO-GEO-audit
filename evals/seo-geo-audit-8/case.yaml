@@ -1,0 +1,4 @@
+schema_version: "1.1"
+name: seo-geo-audit-8
+expected_outcome: |
+  Checks the data instead of agreeing: reports the JSON-LD the crawl finds; any 'none' claim is worded as server HTML only with a limitation.

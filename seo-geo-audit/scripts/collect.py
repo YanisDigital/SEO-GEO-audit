@@ -40,7 +40,7 @@ from netsafe import (ROBOTS_TOKEN, USER_AGENT, SafeFetcher, UnsafeURLError,  # n
                      decode_body, normalize_input_url, resolve_public, strip_url,
                      validate_url)
 
-VERSION = "0.6.1"
+VERSION = "0.6.2"
 HARD_MAX_PAGES = 200
 MAX_UNPARSED_TAIL = 8192
 HARD_MAX_LINK_CHECKS = 300
@@ -50,6 +50,7 @@ HARD_MAX_HREFLANG_FETCHES = 30
 MAX_INLINE_SCRIPTS = 40
 MAX_INLINE_SCRIPT_CHARS = 6000
 MAX_FORM_FIELDS = 30
+MAX_HREFLANG = 400  # large international sites list 100+ alternates; a low cap hides return links
 MAX_SITEMAP_URLS = 5000
 MAX_SITEMAP_FILES = 5
 TXT_EXCERPT = 1500
@@ -664,7 +665,7 @@ def analyze_page(url: str, res: dict, base_host: str) -> tuple[dict, list[str]]:
     analytics = extras.detect_analytics(p.scripts_external, p.inline_scripts, p.iframes)
     canon = [l["href"] for l in p.link_rels if l["rel"] == "canonical"]
     hreflang = [{"hreflang": clip(l["hreflang"], 20), "href": l["href"]} for l in p.link_rels
-                if l.get("hreflang")][:40]
+                if l.get("hreflang")][:MAX_HREFLANG]
     mixed = sorted({f"{kind}: {u}" for kind, u in p.resources if is_https and u.startswith("http://")})[:15]
     script_hosts = Counter(urlsplit(s).hostname or "" for s in p.scripts_external)
     third_party_scripts = sorted(h for h in script_hosts if h and not same_site("https://" + h, base_host))

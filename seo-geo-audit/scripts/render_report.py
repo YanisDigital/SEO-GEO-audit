@@ -131,6 +131,7 @@ DEFAULT_LABELS = {
     "competitor_topics": "Competitor topics the site doesn't cover",
     "topic": "Topic",
     "gaps_note": "Lexical matching of word stems against titles, headings, URLs and text of the crawled pages: a list of leads to review, not a verdict.",
+    "new_page_checklist": "New page is findable: linked from at least 3 relevant pages with descriptive anchors; unique title and description; one H1 in line with the title; self-referencing canonical; listed in the XML sitemap; structured data where the page type supports it; main content in the server HTML; indexable (no noindex, not blocked in robots.txt); a clear call or booking path",
     "proposals": "Proposed changes",
     "current": "Current",
     "proposed": "Proposed",
@@ -433,6 +434,14 @@ def task_status(task: dict, changes) -> tuple[str | None, str]:
                     and titles_similar(x.get("title"), task.get("title")) and norm_key(x.get("status")) in STATUS_KEYS:
                 return norm_key(x.get("status")), s(x.get("note"))
     return None, ""
+
+
+def task_acceptance(task: dict, L: dict) -> list:
+    """Acceptance criteria; a task with "creates_page": true also gets the standard new-page checklist."""
+    acc = [x for x in as_list(task.get("acceptance")) if s(x)]
+    if task.get("creates_page") is True and L["new_page_checklist"] not in acc:
+        acc.append(L["new_page_checklist"])
+    return acc
 
 
 def task_proposals(task: dict) -> list[dict]:
@@ -747,7 +756,7 @@ def render_html(d: dict, L: dict) -> str:
                         out.append(f'<tr><td>{link(x.get("page"))}</td><td>{e(x.get("current"))}</td>'
                                    f'<td>{e(x.get("proposed"))}</td><td>{e(x.get("reason"))}</td></tr>')
                     out.append("</tbody></table></div>")
-                acc = as_list(t.get("acceptance"))
+                acc = task_acceptance(t, L)
                 if acc:
                     out.append(f'<h4>{e(L["acceptance"])}</h4><ul>' + "".join(f"<li>{e(x)}</li>" for x in acc) + "</ul>")
                 pages = as_list(t.get("pages"))
@@ -970,7 +979,7 @@ def render_md(d: dict, L: dict) -> str:
                 lines += [f'| {md_cell(x.get("page"))} | {md_cell(x.get("current"))} | {md_cell(x.get("proposed"))} | '
                           f'{md_cell(x.get("reason"))} |' for x in props]
                 lines.append("")
-            acc = as_list(t.get("acceptance"))
+            acc = task_acceptance(t, L)
             if acc:
                 lines.append(f'**{md_text(L["acceptance"])}:**')
                 lines += [f"- [ ] {md_text(x)}" for x in acc]
@@ -1015,7 +1024,7 @@ def render_csv(d: dict, L: dict) -> str:
                "\n".join(s(x) for x in as_list(t.get("evidence")) if s(x)),
                t.get("impact"), t.get("why"),
                "\n".join(f"{i}. {s(x)}" for i, x in enumerate(as_list(t.get("steps")), 1)),
-               "\n".join(f"\u2022 {s(x)}" for x in as_list(t.get("acceptance"))),
+               "\n".join(f"\u2022 {s(x)}" for x in task_acceptance(t, L)),
                t.get("effort"), t.get("owner"), L["status_" + (st_key or "open")], st_note]
         w.writerow([csv_cell(c) for c in row])
     return buf.getvalue()
