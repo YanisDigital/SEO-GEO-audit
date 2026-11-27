@@ -67,7 +67,7 @@ Per listing, into `entity.listings` in report.json:
 
 ```json
 {"source": "Healthgrades", "url": "https://...", "name": "ok", "address": "mismatch",
- "phone": "ok", "rating": "4.8", "reviews": "37", "note": "lists the old Lakewood, CA address"}
+ "phone": "ok", "rating": "4.8", "reviews": "37", "note": "lists an old address in another city"}
 ```
 
 `name` / `address` / `phone`: `ok`, `mismatch` or `missing` compared with
@@ -84,7 +84,7 @@ mentions. Also note claims on the site that no third party confirms. Record
 them in `entity.claims_gap`:
 
 ```json
-{"claim": "Castle Connolly Top Doctor 2025", "found_on": "US News", "url": "https://...", "on_site": false}
+{"claim": "Top Doctor award 2025", "found_on": "a medical directory", "url": "https://...", "on_site": false}
 ```
 
 Facts confirmed by third parties are what answer engines repeat most readily.

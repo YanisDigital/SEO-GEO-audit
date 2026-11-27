@@ -5,4 +5,4 @@ timeout_seconds: 1800
 allowed_tools: [Read, Glob, Grep, Skill, Write, Edit, Bash]
 ---
 
-Аудит сайту https://beverlyhillsortho.com/ — чому нас не згадує ChatGPT?
+Аудит сайту https://www.mouthhealthy.org/ для клієнта зі стоматологічної галузі — чому його не згадує ChatGPT?

@@ -40,7 +40,7 @@ from netsafe import (ROBOTS_TOKEN, USER_AGENT, SafeFetcher, UnsafeURLError,  # n
                      decode_body, normalize_input_url, resolve_public, strip_url,
                      validate_url)
 
-VERSION = "0.6.2"
+VERSION = "0.6.3"
 HARD_MAX_PAGES = 200
 MAX_UNPARSED_TAIL = 8192
 HARD_MAX_LINK_CHECKS = 300

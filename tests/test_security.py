@@ -519,6 +519,12 @@ class GapsTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             gaps.read_keywords(self.write("k.csv", "foo,bar\nx,y\n"))
 
+    def test_huge_csv_cell_does_not_crash(self):
+        big = gaps.read_keywords(self.write("big.csv", "query\n" + "a" * 300_000 + "\n"))
+        self.assertEqual(len(big[0]["query"]), 200)                 # clipped, no csv.Error
+        with self.assertRaises(ValueError):                          # over the field limit: a clear error
+            gaps.read_keywords(self.write("huge.csv", "query\n" + "a" * 1_500_000 + "\n"))
+
     def test_matching_uses_pages_and_uncrawled_urls(self):
         crawl = {"pages": [{"title": "Braces for adults", "url": "https://a.example/adults",
                             "headings": [{"level": 1, "text": "Adult braces"}], "text_excerpt": "Invisalign too"}],

@@ -5,4 +5,4 @@ timeout_seconds: 1800
 allowed_tools: [Read, Glob, Grep, Skill, Write, Edit, Bash]
 ---
 
-Find content gaps for https://westwoodlaorthodontics.com/: what do people search that we have no page for?
+Find content gaps for https://books.toscrape.com/: what do people search for that the site has no page for?

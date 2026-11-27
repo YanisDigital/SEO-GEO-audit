@@ -108,7 +108,7 @@ non-public client data into third-party AI services.
      site (NAP mismatches are findings). A missing card, or one at an old
      address, is a high-severity local finding. Record it as a `brand` check
      with the card facts in `note`.
-  2. Non-brand: "<category> near <area>" (e.g. "orthodontist Westwood"). Record
+  2. Non-brand: "<category> near <area>" (e.g. "dentist downtown"). Record
      whether the business appears in the visible results and which businesses
      appear above it. This is a `non_brand` check.
   Read only what is shown. Don't click "Suggest an edit", "Claim this

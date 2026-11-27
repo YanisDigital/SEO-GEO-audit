@@ -85,7 +85,11 @@ def read_keywords(path: str) -> list[dict]:
         text = fh.read()
     first = text.split("\n", 1)[0]
     delim = "\t" if "\t" in first else (";" if first.count(";") > first.count(",") else ",")
-    rows = list(csv.reader(io.StringIO(text), delimiter=delim))
+    csv.field_size_limit(1_000_000)  # the default (128 KB) raises on one huge cell; the file is capped at 5 MB
+    try:
+        rows = list(csv.reader(io.StringIO(text), delimiter=delim))
+    except csv.Error as exc:
+        raise ValueError(f"{path}: not a readable CSV ({exc})") from exc
     if not rows:
         return []
     qi = pick(rows[0], QUERY_COLS)
